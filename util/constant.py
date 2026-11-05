@@ -7,3 +7,5 @@ OAUTH_SCOPES = [
 ATLASSIAN_AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 ATLASSIAN_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 ATLASSIAN_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
+
+APPROVALS_TABLE_ENV = "APPROVALS_TABLE"

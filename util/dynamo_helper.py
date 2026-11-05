@@ -71,13 +71,9 @@ class DynamoHelper:
             ExpressionAttributeNames={"#state": "state"},
         )
         params = {
-            "audience": "api.atlassian.com",
-            "client_id": client_id,
-            "scope": " ".join(OAUTH_SCOPES),
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "response_type": "code",
-            "prompt": "consent",
+            "audience": "api.atlassian.com", "client_id": client_id,
+            "scope": " ".join(OAUTH_SCOPES), "redirect_uri": redirect_uri,
+            "state": state, "response_type": "code", "prompt": "consent",
         }
         return f"{ATLASSIAN_AUTHORIZE_URL}?{urlencode(params)}"
 

@@ -1,0 +1,11 @@
+.vscode/settings.json
+agent/__pycache__/*
+approval/__pycache__/*
+functions/__pycache__/*
+handlers/__pycache__/*
+jira/__pycache__/*
+jira/tasks/__pycache__/*
+slack/__pycache__/*
+tests/__pycache__/*
+util/__pycache__/*
+

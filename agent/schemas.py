@@ -5,6 +5,7 @@ from typing import Any
 class AgentRequest:
     slack_user_id: str
     text: str
+    channel_id: str | None = None
 
 @dataclass
 class AgentResult:
