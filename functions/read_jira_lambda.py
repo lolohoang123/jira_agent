@@ -1,4 +1,5 @@
 import json
+import hmac
 import logging
 import os
 import urllib.parse
@@ -24,7 +25,10 @@ def lambda_handler(event,context):
         return handle_oauth_callback(event)
     #handle all event task by slash command in slack
     if event.get("_async_task"):
-        if not os.environ.get("ASYNC_TASK_SECRET") or event.get("_task_secret")!=os.environ.get("ASYNC_TASK_SECRET"):
+        expected_secret=os.environ.get("ASYNC_TASK_SECRET") or ""
+        provided_secret=event.get("_task_secret")
+        if (not expected_secret or not isinstance(provided_secret,str)
+                or not hmac.compare_digest(provided_secret.encode("utf-8"),expected_secret.encode("utf-8"))):
             return json_response(403,{"error":"forbidden"})
         return handle_async_task(event)
     try:

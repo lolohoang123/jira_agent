@@ -9,3 +9,20 @@ slack/__pycache__/*
 tests/__pycache__/*
 util/__pycache__/*
 
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Packaging / IDE
+*.zip
+.idea/
+.DS_Store
+

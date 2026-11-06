@@ -29,7 +29,7 @@ template.yaml                       # (optional) AWS SAM template, see the AWS I
 1. Set the Lambda handler to `functions.read_jira_lambda.lambda_handler`.
 2. Upload the whole source tree (or a ZIP) together with `requirements.txt` / a dependency layer that includes `boto3`.
 3. Configure the variables from `.env.example` on the Lambda function.
-4. Create the DynamoDB tables: `OAUTH_STATES_TABLE` with string partition key `state`; `OAUTH_USERS_TABLE` with string partition key `slack_user_id`; `APPROVALS_TABLE` with string partition key `approval_id`. Enable DynamoDB TTL on the `ttl` attribute of the approvals table.
+4. Create the DynamoDB tables: `OAUTH_STATES_TABLE` with string partition key `state`; `OAUTH_USERS_TABLE` with string partition key `slack_user_id`; `APPROVALS_TABLE` with string partition key `approval_id`. Enable DynamoDB TTL on the `ttl` attribute of the approvals table and on the `expiresAt` attribute of the OAuth states table.
 5. Point the Slack Slash Command Request URL and Interactivity Request URL at the API Gateway endpoint integrated with the Lambda; the Atlassian OAuth redirect URI must exactly match the API Gateway URL plus `/oauth/callback`.
 6. The Lambda execution role needs DynamoDB permissions on the tables, `lambda:InvokeFunction` on the function itself, and `bedrock:InvokeModel` for the chosen model/inference profile.
 7. Add `BEDROCK_MODEL_ID` and `BEDROCK_REGION` for the chosen model. See `docs/BEDROCK_SETUP.md` for detailed setup.
@@ -66,13 +66,13 @@ flowchart LR
 |---|---|---|
 | Lambda function | Python 3.12 runtime, handler `functions.read_jira_lambda.lambda_handler`, 512 MB memory, 30–60 s timeout | Handles all requests and async tasks |
 | API Gateway (HTTP API or REST API) | Route `ANY /` or `POST /` for Slack, `GET /oauth/callback` for Atlassian; Lambda proxy integration | Public endpoint for Slack and Atlassian |
-| DynamoDB `OAUTH_STATES_TABLE` | PK `state` (String), on-demand | OAuth state for CSRF protection |
+| DynamoDB `OAUTH_STATES_TABLE` | PK `state` (String), on-demand, **TTL enabled on attribute `expiresAt`** | OAuth state for CSRF protection (single-use, 10-minute lifetime) |
 | DynamoDB `OAUTH_USERS_TABLE` | PK `slack_user_id` (String), on-demand | Access/refresh tokens, `jiraSiteUrl`, and cloud id per Slack user |
 | DynamoDB `APPROVALS_TABLE` | PK `approval_id` (String), on-demand, **TTL enabled on attribute `ttl`** | Approval requests (`PENDING`/`EXECUTING`/...) |
 | Amazon Bedrock | Model or inference profile via `BEDROCK_MODEL_ID`, region `BEDROCK_REGION` | Parses natural-language commands into a JSON plan |
 | CloudWatch Logs | 14–30 day retention | Operational logs; **do not log tokens, Slack bodies, or worklog descriptions** |
 
-> If the code also writes a `ttl` attribute to `OAUTH_STATES_TABLE`, enable TTL on that table too so expired states are cleaned up.
+> The code stores the OAuth state expiry in `expiresAt` (Unix seconds) on `OAUTH_STATES_TABLE`, and in `ttl` on `APPROVALS_TABLE`. Enable TTL on those attributes respectively, otherwise expired items are never cleaned up automatically.
 
 ### Lambda environment variables
 The full list is in `.env.example`. The variables directly related to infrastructure:
@@ -145,6 +145,7 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: state, AttributeType: S }]
       KeySchema: [{ AttributeName: state, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
 
   OAuthUsersTable:
     Type: AWS::DynamoDB::Table
@@ -204,7 +205,7 @@ Outputs:
 1. Take the API URL from the stack output and enter it as the Slack Slash Command Request URL and Interactivity Request URL.
 2. Set the Atlassian redirect URI to `<API URL>/oauth/callback` (it must match exactly).
 3. Enable model access in the Bedrock console for `BEDROCK_MODEL_ID` in `BEDROCK_REGION`.
-4. Confirm TTL on `APPROVALS_TABLE` is Enabled.
+4. Confirm TTL is Enabled on `APPROVALS_TABLE` (attribute `ttl`) and on `OAUTH_STATES_TABLE` (attribute `expiresAt`).
 5. Set CloudWatch log retention and (recommended) alarms on Lambda `Errors`, `Throttles`, and `Duration`.
 6. Consider Reserved Concurrency and API Gateway throttling to cap Bedrock costs if the endpoint is spammed.
 
@@ -212,7 +213,8 @@ Outputs:
 - Bedrock only proposes JSON intents/parameters. `agent/tool_registry.py` validates the allow-list and the data; the model is never allowed to call the Jira API.
 - Every worklog write path from the modal now goes through the Approval Service. Do not use the old `create_jira_worklog` task directly; only the async task `handle_approval_action` may execute a write, and only after successfully claiming the approval.
 - Every worklog creation request from the Agent goes through ApprovalService; the model must not call the Jira write API directly. Python still validates and enforces approval.
-- The refresh lock reduces concurrent token refreshes; you should still test with a real DynamoDB and with Lambda retries. Do not log OAuth tokens, Slack bodies, or worklog descriptions.
+- The refresh lock is a DynamoDB conditional update (`refreshLockOwner` / `refreshLockUntil`, 30-second lease) that reduces concurrent token refreshes; you should still test with a real DynamoDB and with Lambda retries. Do not log OAuth tokens, Slack bodies, or worklog descriptions.
+- Approve/Reject results are sent to the clicking user as an ephemeral message; the original approval message is replaced only after a successful approve or reject, so other users cannot wipe the owner's buttons. If executing an approved worklog fails, the user is told to check Jira before submitting again and the task is not retried by Lambda.
 - The MVP stores one Jira site per Slack user; reconnecting to a different site replaces the previous connection.
 - Jira issue links are built from each Slack user's `jiraSiteUrl`; do not use a global URL if one is already present in the OAuth record.
 - Run unit/integration tests against a Jira sandbox before deploying to production.
