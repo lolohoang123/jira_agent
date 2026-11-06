@@ -19,9 +19,10 @@ def lambda_handler(event,context):
     path=event.get("rawPath") or event.get("path") or "/"
     method=(event.get("requestContext",{}).get("http",{}).get("method") or event.get("httpMethod") or "").upper()
     normalized_path = path.rstrip("/")
-
+    #Handle call back after authentication
     if normalized_path.endswith("/oauth/callback") and method=="GET":
         return handle_oauth_callback(event)
+    #handle all event task by slash command in slack
     if event.get("_async_task"):
         if not os.environ.get("ASYNC_TASK_SECRET") or event.get("_task_secret")!=os.environ.get("ASYNC_TASK_SECRET"):
             return json_response(403,{"error":"forbidden"})

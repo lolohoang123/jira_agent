@@ -15,6 +15,9 @@ class BedrockLLMClient:
         self.client = client or boto3.client("bedrock-runtime", region_name=region)
 
     def generate_plan(self, system_prompt, user_message):
+        print("=======BedrockLLMClient=======")
+        print(">>>>>>>>>input")
+        print(system_prompt)
         response = self.client.converse(
             modelId=self.model_id,
             system=[{"text": system_prompt}],
@@ -22,6 +25,8 @@ class BedrockLLMClient:
             inferenceConfig={"maxTokens": 450, "temperature": 0},
         )
         content = response.get("output", {}).get("message", {}).get("content", [])
+        print(">>>>>>>>>output")
+        print(content)
         raw = "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
         # Accept a fenced JSON response, but no prose or repair heuristics.
         fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
