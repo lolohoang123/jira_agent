@@ -5,7 +5,6 @@ import time
 import uuid
 
 import boto3
-from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
@@ -13,7 +12,6 @@ logger = logging.getLogger(__name__)
 DEDUPE_PREFIX = "dedupe#"
 DEDUPE_WINDOW_SECONDS = 86400
 DEFAULT_RETENTION_DAYS = 90
-_serializer = TypeSerializer()
 
 
 class DuplicateApprovalError(Exception):
@@ -90,13 +88,15 @@ class ApprovalRepository:
             "ttl": now + DEDUPE_WINDOW_SECONDS,
         }
         try:
+            # Plain Python values: the client of a boto3 *resource* serializes them itself.
+            # Pre-serializing ({"N": "1"}) would be wrapped again into a map ("operand type: M").
             self.table.meta.client.transact_write_items(TransactItems=[
-                {"Put": {"TableName": self.table.name, "Item": self._serialize(item),
+                {"Put": {"TableName": self.table.name, "Item": item,
                          "ConditionExpression": "attribute_not_exists(approval_id)"}},
-                {"Put": {"TableName": self.table.name, "Item": self._serialize(dedupe_item),
+                {"Put": {"TableName": self.table.name, "Item": dedupe_item,
                          # An expired dedupe row (TTL deletion is lazy) no longer blocks a new request.
                          "ConditionExpression": "attribute_not_exists(approval_id) OR expires_at <= :now",
-                         "ExpressionAttributeValues": {":now": {"N": str(now)}}}},
+                         "ExpressionAttributeValues": {":now": now}}},
             ])
         except ClientError as exc:
             if self._dedupe_conflict(exc):
@@ -196,10 +196,6 @@ class ApprovalRepository:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 return None
             raise
-
-    @staticmethod
-    def _serialize(item):
-        return {key: _serializer.serialize(value) for key, value in item.items()}
 
     @staticmethod
     def _dedupe_conflict(exc):

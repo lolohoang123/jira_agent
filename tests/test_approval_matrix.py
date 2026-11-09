@@ -145,14 +145,15 @@ def test_tc05_create_pending_default_ttl_writes_pending_item(repo, table):
     }
     puts = [op["Put"] for op in table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]]
     assert [p["TableName"] for p in puts] == ["approvals-test", "approvals-test"]
-    assert puts[0]["Item"]["approval_id"] == {"S": APPROVAL_ID}
-    assert puts[0]["Item"]["status"] == {"S": "PENDING"}
+    # Plain Python values: the resource client serializes them (wire format: test_approval_wire_format.py).
+    assert puts[0]["Item"] == item
     assert puts[0]["ConditionExpression"] == "attribute_not_exists(approval_id)"
     assert puts[1]["Item"] == {
-        "approval_id": {"S": f"dedupe#{dedupe_key}"}, "target_approval_id": {"S": APPROVAL_ID},
-        "expires_at": {"N": str(NOW + 86400)}, "ttl": {"N": str(NOW + 86400)},
+        "approval_id": f"dedupe#{dedupe_key}", "target_approval_id": APPROVAL_ID,
+        "expires_at": NOW + 86400, "ttl": NOW + 86400,
     }
     assert puts[1]["ConditionExpression"] == "attribute_not_exists(approval_id) OR expires_at <= :now"
+    assert puts[1]["ExpressionAttributeValues"] == {":now": NOW}
     table.put_item.assert_not_called()
 
 

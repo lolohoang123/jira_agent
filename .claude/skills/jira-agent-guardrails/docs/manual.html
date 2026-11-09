@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jira-agent-guardrails Manual</title>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da; --code:#f6f8fa; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --accent:#4493f8; --code:#151b23; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.65 system-ui, "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 72px 16px 48px; }
+  .bar { position:fixed; top:0; left:0; right:0; display:flex; gap:8px; flex-wrap:wrap; justify-content:center; padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--line); z-index:10; }
+  .bar button { border:1px solid var(--line); background:var(--code); color:var(--fg); border-radius:6px; padding:5px 12px; font:inherit; cursor:pointer; }
+  .bar button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  h1 { font-size:1.6rem; margin:0 0 4px; } h2 { font-size:1.2rem; margin-top:2rem; border-bottom:1px solid var(--line); padding-bottom:4px; }
+  p.sub { color:var(--muted); margin-top:0; }
+  code, pre { background:var(--code); border-radius:6px; font:13px/1.5 ui-monospace, Consolas, monospace; }
+  code { padding:1px 5px; } pre { padding:12px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; display:block; overflow-x:auto; }
+  th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { background:var(--code); }
+  body.ja .vi, body.vi .ja { display:none; }
+  body.both .vi { color:var(--muted); }
+  @media print { .bar { display:none; } main { padding-top:0; max-width:none; } @page { size:A4; margin:16mm; } }
+</style>
+</head>
+<body class="both">
+<nav class="bar" aria-label="Language">
+  <button data-mode="ja">🇯🇵 日本語のみ</button>
+  <button data-mode="vi">🇻🇳 Tiếng Việt</button>
+  <button data-mode="both" aria-pressed="true">🌐 日越併記 (Bilingual)</button>
+  <button onclick="window.print()">🖨️ A4印刷</button>
+</nav>
+<main>
+  <h1>jira-agent-guardrails</h1>
+  <p class="sub ja">jira_agent リポジトリを CLAUDE.md の「絶対ルール」に照らして機械的に検査するスキルです。</p>
+  <p class="sub vi">Skill kiểm tra tự động repo jira_agent theo các "quy tắc bắt buộc" trong CLAUDE.md.</p>
+
+  <h2>1. 使い方 / Cách sử dụng</h2>
+  <p class="ja">Claude Code で次のように依頼します。スクリプトが先に実行され、違反があれば <code>file:line</code> と修正案が返ります。</p>
+  <p class="vi">Yêu cầu Claude Code như dưới đây. Script chạy trước; nếu có vi phạm, Claude trả về <code>file:line</code> và cách sửa.</p>
+  <pre>/jira-agent-guardrails
+「approval/ を変更したのでガードレールを確認して」
+"Kiểm tra guardrails trước khi commit giúp tôi"</pre>
+  <p class="ja">手動実行（CI でも同じコマンド）：</p>
+  <p class="vi">Chạy thủ công (CI dùng cùng lệnh):</p>
+  <pre>python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .
+# exit 0 = OK, exit 1 = ERROR あり / có lỗi ERROR</pre>
+
+  <h2>2. ルール一覧 / Danh sách quy tắc</h2>
+  <table>
+    <tr><th>Rule</th><th>日本語</th><th>Tiếng Việt</th></tr>
+    <tr><td>G1</td><td class="ja">Jira 書き込みは ApprovalService 経由のみ</td><td class="vi">Chỉ ghi Jira qua ApprovalService</td></tr>
+    <tr><td>G2</td><td class="ja">モデルが指定した名前で関数を呼ばない（許可リストのみ）</td><td class="vi">Không gọi hàm theo tên do model đưa ra (chỉ allow-list)</td></tr>
+    <tr><td>G3</td><td class="ja">トークン・リクエスト本文・作業内容をログに出さない／print 禁止</td><td class="vi">Không log token, body request, mô tả worklog; cấm print</td></tr>
+    <tr><td>G4</td><td class="ja">Slack 署名検証・300 秒のリプレイ窓・非同期タスクの秘密鍵</td><td class="vi">Xác minh chữ ký Slack, cửa sổ replay 300 giây, secret cho task bất đồng bộ</td></tr>
+    <tr><td>G5</td><td class="ja">承認は作成者のみ・PENDING→EXECUTING の条件付き更新</td><td class="vi">Chỉ người tạo được duyệt; cập nhật có điều kiện PENDING→EXECUTING</td></tr>
+    <tr><td>G6</td><td class="ja">resource クライアントに型付き値（{"N": …}）を渡さない</td><td class="vi">Không truyền giá trị đã định kiểu ({"N": …}) qua client của resource</td></tr>
+    <tr><td>G7</td><td class="ja">urlopen には必ず timeout</td><td class="vi">urlopen luôn phải có timeout</td></tr>
+    <tr><td>G8</td><td class="ja">実行時依存は標準ライブラリ＋boto3 のみ／_backup を import しない</td><td class="vi">Phụ thuộc runtime chỉ stdlib + boto3; không import _backup</td></tr>
+  </table>
+
+  <h2>3. なぜこの設計か / Vì sao thiết kế như vậy</h2>
+  <ul>
+    <li><span class="ja">判定はスクリプト（ast 解析）で行い、AI の読み取りに頼らない：毎回同じ結果になり、トークンも節約でき、CI でも Claude なしで動く。</span>
+        <span class="vi">Phán định bằng script (phân tích ast), không dựa vào AI đọc code: kết quả luôn giống nhau, tiết kiệm token, chạy được trong CI mà không cần Claude.</span></li>
+    <li><span class="ja">コードを import・実行しない：環境変数や AWS 認証情報がなくても安全に検査できる。</span>
+        <span class="vi">Không import hay chạy code: kiểm tra an toàn kể cả khi thiếu biến môi trường hoặc thông tin AWS.</span></li>
+    <li><span class="ja">各ルールは CLAUDE.md の規則か、実際に起きた不具合に対応する。根拠のないルールは誤検知を増やすだけ。</span>
+        <span class="vi">Mỗi quy tắc tương ứng một quy định trong CLAUDE.md hoặc một lỗi đã xảy ra thật. Quy tắc không có căn cứ chỉ làm tăng báo động giả.</span></li>
+    <li><span class="ja">300 秒は数値で厳密に照合する（"&gt; 3000" を見逃さないため）。</span>
+        <span class="vi">Số 300 được so khớp chính xác (để không bỏ sót "&gt; 3000").</span></li>
+    <li><span class="ja">テスト（tests/test_guardrails_skill.py）は実コードをコピーして違反を 1 つずつ注入し、各ルールが検出することと誤検知がないことを保証する。</span>
+        <span class="vi">Test (tests/test_guardrails_skill.py) sao chép code thật, chèn từng vi phạm một, bảo đảm mỗi quy tắc đều phát hiện được và không có báo động giả.</span></li>
+  </ul>
+
+  <h2>4. 防いでいる失敗 / Những lỗi được ngăn chặn</h2>
+  <table>
+    <tr><th>Rule</th><th>実例 / Ví dụ thực tế</th></tr>
+    <tr><td>G1</td><td><span class="ja">承認を経ずに Jira に書き込む <code>run_create_worklog_task.py</code> が残っていた（このスキルが初回実行で検出）。</span><span class="vi">Còn sót <code>run_create_worklog_task.py</code> ghi Jira mà không qua duyệt (skill phát hiện ngay lần chạy đầu).</span></td></tr>
+    <tr><td>G3</td><td><span class="ja"><code>llm_client.py</code> の print() がモデル出力（作業内容を含む）を CloudWatch に出していた。</span><span class="vi"><code>print()</code> trong <code>llm_client.py</code> ghi output của model (kèm mô tả worklog) ra CloudWatch.</span></td></tr>
+    <tr><td>G6</td><td><span class="ja">TransactWriteItems が本番で "operand type: M" で失敗。モックのテストでは検出できなかった。</span><span class="vi">TransactWriteItems lỗi trên production với "operand type: M"; test dùng mock không phát hiện được.</span></td></tr>
+    <tr><td>G4</td><td><span class="ja">リプレイ窓を広げる・秘密鍵の比較を == にする、といった「小さな変更」で認証が弱まる。</span><span class="vi">Những "thay đổi nhỏ" như nới cửa sổ replay hay so sánh secret bằng == làm yếu xác thực.</span></td></tr>
+  </table>
+  <p class="ja"><b>限界：</b>静的解析なので、変数名に機密を示す語がない値のログは検出できません。振る舞いは単体テストで保証します。</p>
+  <p class="vi"><b>Giới hạn:</b> đây là phân tích tĩnh, nên không phát hiện được log giá trị nhạy cảm nếu tên biến không gợi ý điều đó. Hành vi được bảo đảm bằng unit test.</p>
+
+  <h2>5. ルールを変えるとき / Khi muốn đổi quy tắc</h2>
+  <p class="ja">チェックを通すためにルールを弱めてはいけません。変更する場合はユーザーの明示的な承認を得て、CLAUDE.md・guardrail-rules.md・テストを同時に更新します。</p>
+  <p class="vi">Không được nới quy tắc chỉ để vượt qua bước kiểm tra. Nếu cần đổi, phải có đồng ý rõ ràng của người dùng và cập nhật đồng thời CLAUDE.md, guardrail-rules.md và test.</p>
+</main>
+<script>
+  const buttons = document.querySelectorAll(".bar button[data-mode]");
+  function setMode(mode) {
+    document.body.className = mode;
+    buttons.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    try { localStorage.setItem("guardrails-lang", mode); } catch (e) {}
+  }
+  buttons.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  try { const saved = localStorage.getItem("guardrails-lang"); if (saved) setMode(saved); } catch (e) {}
+</script>
+</body>
+</html>
