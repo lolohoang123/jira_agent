@@ -27,7 +27,7 @@ def build_today_worklog_blocks(day,worklogs,site_url):
     return blocks
 
 
-def build_assigned_issue_blocks(issues,service):
+def build_assigned_issue_blocks(issues,site_url):
     blocks=[{"type":"section","text":{"type":"mrkdwn","text":"*Your assigned Jira tickets*\nShowing up to 20 tickets, ordered by recently updated."}}]
     if not issues:
         blocks.append({"type":"section","text":{"type":"mrkdwn","text":"No Jira tickets are currently assigned to you."}})
@@ -35,8 +35,8 @@ def build_assigned_issue_blocks(issues,service):
     for issue in issues[:20]:
         key=issue["key"]; fields=issue.get("fields",{}); summary=fields.get("summary","(No summary)")
         status=(fields.get("status") or {}).get("name","Unknown status")
-        seconds=sum(int(w.get("timeSpentSeconds",0)) for w in service.get_issue_worklogs(key))
-        link=f"{service.site_url}/browse/{urllib.parse.quote(key,safe='')}"
+        seconds=int(fields.get("timespent") or 0)
+        link=f"{site_url}/browse/{urllib.parse.quote(key,safe='')}"
         blocks.append({"type":"section","text":{"type":"mrkdwn","text":f"<{link}|*{slack_escape(key)} — {slack_escape(summary)}*>\nStatus: {slack_escape(status)} · Total logged: *{_duration(seconds)}*"},
             "accessory":{"type":"button","action_id":"open_log_time","text":{"type":"plain_text","text":"Log Time"},"style":"primary","value":key}})
     if len(issues)>20:

@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: Jira Agent Slack Bot API
+  version: 1.0.0
+  description: |
+    HTTP contract of the `/jira-agent` Slack bot Lambda (`functions/read_jira_lambda.py`) behind API Gateway.
+
+    The API has two callers, and neither is a general-purpose client:
+    - **Slack** posts slash commands and interactivity payloads to `POST /`. Every request must carry a valid
+      Slack request signature (`slack/slack_security.py`); the 200 response bodies follow Slack's own formats.
+    - **Atlassian** redirects the user's browser to `GET /oauth/callback` at the end of the OAuth 2.0 (3LO) flow.
+
+    Slow work (Bedrock, Jira) is never done in the request: the Lambda ACKs within Slack's 3-second limit and
+    re-invokes itself asynchronously. Results reach the user later via the command's `response_url`
+    (see the `delayedResponse` callback) or via the Slack Web API (`chat.postMessage`, `chat.postEphemeral`,
+    `chat.update`, `views.open`). The internal async-task payloads are documented under
+    `components.schemas.AsyncTask*`; they are Lambda `Event` invocations, not HTTP routes.
+
+    **Deviations from the house template, on purpose:**
+    - No JWT bearer auth: Slack authenticates with an HMAC signature, Atlassian with the one-time OAuth `state`.
+    - Errors are `{"error": "<code>"}` (`ErrorResponse`), not RFC 9457 `ProblemDetails`; Slack ignores error bodies.
+    - No `X-Correlation-ID`: the code does not read one.
+
+    **No Jira write happens through this API directly.** Logging time only creates a PENDING approval; the
+    worklog is written after its owner clicks *Approve* (`approve_jira_write`).
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com
+    description: API Gateway (HTTP API, default stage)
+    variables:
+      apiId:
+        default: abc123
+      region:
+        default: ap-southeast-1
+tags:
+  - name: Slack
+    description: Slash commands and interactivity (buttons, modal submissions)
+  - name: OAuth
+    description: Atlassian OAuth 2.0 (3LO) callback
+paths:
+  /:
+    post:
+      tags: [Slack]
+      operationId: handleSlackRequest
+      summary: Receive a Slack slash command or interactivity payload
+      description: |
+        One URL serves both the Slack **Slash Command Request URL** and the **Interactivity Request URL**.
+        The body is always `application/x-www-form-urlencoded`:
+        - an interactivity request has a single `payload` field holding a JSON string
+          (`InteractivityPayload`);
+        - otherwise it is a slash command (`SlashCommandForm`).
+
+        **Slash command `text` routing** (whitespace collapsed, matched case-insensitively):
+
+        | `text` | Behaviour | Immediate reply |
+        |---|---|---|
+        | `connect` | Creates a one-time OAuth state (10 min) | Ephemeral message with the *Connect Jira* link |
+        | `list` | Async task `list_assigned_issues` | "Fetching your Jira data..." |
+        | `logwork today` | Async task `jira_worklog` | "Fetching your Jira data..." |
+        | anything else | Async task `agent_request` (Bedrock plans, allow-listed execution) | "I'm processing your Jira request..." |
+
+        `list` and `logwork today` first check that the user has connected Jira; if not, the reply is
+        "Your Jira account is not connected. Run `/jira-agent connect` first." (still HTTP 200).
+        A command other than `/jira-agent` gets a 200 hint to use `/jira-agent`.
+      security:
+        - slackSignature: []
+          slackTimestamp: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SlashCommandForm'
+                - $ref: '#/components/schemas/InteractivityForm'
+            examples:
+              slashCommandList:
+                summary: "/jira-agent list"
+                value:
+                  command: /jira-agent
+                  text: list
+                  user_id: U012ABCDEF
+                  channel_id: C012ABCDEF
+                  response_url: https://hooks.slack.com/commands/T000/123/abc
+              approveButton:
+                summary: Approve button click (payload is a JSON string)
+                value:
+                  payload: '{"type":"block_actions","user":{"id":"U012ABCDEF"},"channel":{"id":"C012ABCDEF"},"message":{"ts":"1731139200.000100"},"actions":[{"action_id":"approve_jira_write","value":"0f8fad5b-d9cb-469f-a165-70867728950e"}]}'
+      responses:
+        '200':
+          description: |
+            ACK in a Slack response format. Which shape is returned depends on the request:
+            - slash command → `EphemeralMessage`;
+            - `block_actions` and unhandled payload types → empty body;
+            - `view_submission` → `ViewSubmissionErrors` (validation failed, modal stays open) or
+              `ViewSubmissionClear` (approval request queued, modal closes).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/EphemeralMessage'
+                  - $ref: '#/components/schemas/ViewSubmissionErrors'
+                  - $ref: '#/components/schemas/ViewSubmissionClear'
+                  - $ref: '#/components/schemas/EmptyBody'
+              examples:
+                processing:
+                  value: { response_type: ephemeral, text: "I'm processing your Jira request..." }
+                modalErrors:
+                  value:
+                    response_action: errors
+                    errors:
+                      issue_block: Enter a valid issue key, e.g. PROJ-123.
+                      duration_block: Duration must look like 30m, 1h, 1h 30m, or 1d.
+                modalClear:
+                  value: { response_action: clear }
+                buttonAck:
+                  value: ''
+          callbacks:
+            delayedResponse:
+              $ref: '#/components/callbacks/DelayedResponse'
+        '400':
+          description: Slash command whose `response_url` is not `https://hooks.slack.com` or `https://hooks.slack-gov.com`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { error: invalid response_url }
+        '401':
+          description: Missing or invalid Slack signature, or timestamp more than 300 s from server time.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { error: invalid Slack signature }
+        '500':
+          description: Unhandled error while routing the request (logged; no request body is logged).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { error: internal_server_error }
+  /oauth/callback:
+    get:
+      tags: [OAuth]
+      operationId: handleOAuthCallback
+      summary: Complete the Atlassian OAuth 2.0 (3LO) connection
+      description: |
+        Atlassian redirects the browser here after consent. The handler:
+        1. consumes the one-time `state` (must exist, be unused and unexpired – 10 minutes);
+        2. exchanges `code` for access and refresh tokens (`offline_access` is required);
+        3. picks the Jira site (the single accessible site, or the one matching `JIRA_BASE_URL`);
+        4. stores the connection for the Slack user, replacing any previous one (one site per user).
+
+        Always returns a small HTML page meant for a person. Tokens are never shown or logged.
+        The path also matches with a trailing slash or a stage prefix (the router checks the path suffix).
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: Authorization code. Required unless `error` is present.
+          schema: { type: string, minLength: 1 }
+        - name: state
+          in: query
+          required: false
+          description: One-time state created by `/jira-agent connect`. Required unless `error` is present.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: error
+          in: query
+          required: false
+          description: Set by Atlassian when the user denied access.
+          schema: { type: string, example: access_denied }
+      responses:
+        '200':
+          description: Jira connected; page names the connected site.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            text/html:
+              schema: { type: string }
+        '400':
+          description: |
+            User cancelled (`error` set), `code`/`state` missing, or the state is expired, already used or unknown.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            text/html:
+              schema: { type: string }
+        '500':
+          description: |
+            Token exchange or Jira lookup failed, no or several Jira sites without a matching `JIRA_BASE_URL`,
+            or the record could not be stored. Details are only in the Lambda logs.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            text/html:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    slackSignature:
+      type: apiKey
+      in: header
+      name: X-Slack-Signature
+      description: |
+        `v0=` + hex HMAC-SHA256 of `v0:{X-Slack-Request-Timestamp}:{raw body}` keyed with `SLACK_SIGNING_SECRET`,
+        compared in constant time. Must be sent together with `X-Slack-Request-Timestamp`.
+    slackTimestamp:
+      type: apiKey
+      in: header
+      name: X-Slack-Request-Timestamp
+      description: Unix seconds; rejected when more than 300 seconds from server time (replay protection).
+
+  headers:
+    NoStore:
+      schema: { type: string, const: no-store }
+
+  callbacks:
+    DelayedResponse:
+      '{$request.body#/response_url}':
+        post:
+          summary: Deliver the result of an async slash-command task to Slack
+          description: |
+            Sent by the async task once the work finishes (`list`, `logwork today`, agent requests).
+            Only `https://hooks.slack.com` / `https://hooks.slack-gov.com` URLs are called.
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema: { $ref: '#/components/schemas/DelayedMessage' }
+          responses:
+            '200':
+              description: Accepted by Slack.
+
+  schemas:
+    SlackUserId:
+      type: string
+      pattern: '^[UW][A-Z0-9]+$'
+      example: U012ABCDEF
+    SlackChannelId:
+      type: string
+      pattern: '^[CDG][A-Z0-9]+$'
+      example: C012ABCDEF
+    ApprovalId:
+      type: string
+      format: uuid
+      description: Id of a row in `APPROVALS_TABLE` (expires after 24 h).
+    IssueKey:
+      type: string
+      pattern: '^[A-Z][A-Z0-9_]*-\d+$'
+      maxLength: 255
+      example: PROJ-123
+    Duration:
+      type: string
+      description: |
+        Jira duration. Case-insensitive units w, d, h, m, in that order; at least one number.
+        Must be greater than 0 and at most `MAX_WORKLOG_MINUTES` (default 24h), counting 1d = 8h and 1w = 5d.
+        An identical request (same user, issue, date, start time and duration) is refused while one is
+        pending or was approved in the last 24 hours.
+      pattern: '^(?=.*\d)\s*(?:\d+\s*[wW]\s*)?(?:\d+\s*[dD]\s*)?(?:\d+\s*[hH]\s*)?(?:\d+\s*[mM]\s*)?$'
+      examples: ['30m', '1h', '1h 30m', '1d']
+    RemainingEstimate:
+      type: string
+      enum: [leave, auto, new]
+      default: leave
+
+    SlashCommandForm:
+      type: object
+      description: Slack slash command fields. Slack sends more fields (team_id, user_name, trigger_id, ...); they are ignored.
+      required: [command, response_url]
+      properties:
+        command:
+          type: string
+          const: /jira-agent
+        text:
+          type: string
+          maxLength: 4000
+          description: User text. Case is preserved for the agent; routing compares a lower-cased copy.
+          examples: [connect, list, logwork today, log 1h on PROJ-12 today at 9:00]
+        user_id: { $ref: '#/components/schemas/SlackUserId' }
+        channel_id: { $ref: '#/components/schemas/SlackChannelId' }
+        response_url:
+          type: string
+          format: uri
+          pattern: '^https://hooks\.slack(-gov)?\.com/'
+      additionalProperties: true
+
+    InteractivityForm:
+      type: object
+      required: [payload]
+      properties:
+        payload:
+          type: string
+          contentMediaType: application/json
+          contentSchema: { $ref: '#/components/schemas/InteractivityPayload' }
+      additionalProperties: false
+
+    InteractivityPayload:
+      oneOf:
+        - $ref: '#/components/schemas/BlockActionsPayload'
+        - $ref: '#/components/schemas/ViewSubmissionPayload'
+      discriminator:
+        propertyName: type
+        mapping:
+          block_actions: '#/components/schemas/BlockActionsPayload'
+          view_submission: '#/components/schemas/ViewSubmissionPayload'
+
+    BlockActionsPayload:
+      type: object
+      description: |
+        Button clicks. Handled `action_id`s:
+        - `approve_jira_write` / `reject_jira_write` (value = `ApprovalId`) → async task `handle_approval_action`.
+          Only the Slack user who created the approval can approve or reject it; anyone else gets an ephemeral
+          refusal and the original message is left untouched.
+        - `open_log_time` (value = issue key, may be empty) → opens the *Log Time* modal (`views.open`).
+        Other actions are acknowledged and ignored.
+      required: [type, user, actions]
+      properties:
+        type: { type: string, const: block_actions }
+        trigger_id: { type: string, description: Required for `open_log_time`. }
+        user:
+          type: object
+          required: [id]
+          properties: { id: { $ref: '#/components/schemas/SlackUserId' } }
+        channel:
+          type: object
+          properties: { id: { $ref: '#/components/schemas/SlackChannelId' } }
+        message:
+          type: object
+          properties: { ts: { type: string, example: '1731139200.000100' } }
+        actions:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [action_id]
+            properties:
+              action_id:
+                type: string
+                examples: [approve_jira_write, reject_jira_write, open_log_time]
+              value: { type: string }
+
+    ViewSubmissionPayload:
+      type: object
+      description: |
+        Submission of the *Log Time* modal (`callback_id: log_time_submit`). `view.state.values` is read by
+        `slack/modal_builder.get_modal_form` and normalised into `LogTimeForm`; `view.private_metadata` holds
+        `{"user_id": ..., "channel_id": ...}` set when the modal was opened.
+      required: [type, view]
+      properties:
+        type: { type: string, const: view_submission }
+        user:
+          type: object
+          properties: { id: { $ref: '#/components/schemas/SlackUserId' } }
+        view:
+          type: object
+          required: [state, private_metadata]
+          properties:
+            callback_id: { type: string, const: log_time_submit }
+            private_metadata: { type: string, contentMediaType: application/json }
+            state:
+              type: object
+              description: Slack block state keyed by block_id → action_id (see `LogTimeForm` for the mapping).
+
+    LogTimeForm:
+      type: object
+      description: |
+        Normalised modal values (issue key trimmed and upper-cased before validation). Validation errors are
+        returned per block id: `issue_block`, `date_block`, `start_time_block`, `duration_block`,
+        `estimate_block`, `new_estimate_block`.
+      required: [issue_key, date, start_time, duration, remaining_estimate]
+      properties:
+        issue_key: { $ref: '#/components/schemas/IssueKey' }
+        date: { type: string, format: date, description: 'Block `date_block` / `work_date`.' }
+        start_time:
+          type: string
+          pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+          default: '09:00'
+          description: Local time in `JIRA_TIMEZONE` (default Asia/Ho_Chi_Minh).
+        duration: { $ref: '#/components/schemas/Duration' }
+        description: { type: string, description: Optional worklog comment. Never logged. }
+        remaining_estimate: { $ref: '#/components/schemas/RemainingEstimate' }
+        new_estimate:
+          description: Required (non-empty) when `remaining_estimate` is `new`.
+          type: string
+      if:
+        properties: { remaining_estimate: { const: new } }
+      then:
+        required: [new_estimate]
+        properties: { new_estimate: { minLength: 1 } }
+
+    EphemeralMessage:
+      type: object
+      required: [response_type, text]
+      properties:
+        response_type: { type: string, const: ephemeral }
+        text: { type: string }
+    ViewSubmissionErrors:
+      type: object
+      required: [response_action, errors]
+      properties:
+        response_action: { type: string, const: errors }
+        errors:
+          type: object
+          propertyNames:
+            enum: [issue_block, date_block, start_time_block, duration_block, estimate_block, new_estimate_block]
+          additionalProperties: { type: string }
+    ViewSubmissionClear:
+      type: object
+      required: [response_action]
+      properties:
+        response_action: { type: string, const: clear }
+    EmptyBody:
+      type: string
+      const: ''
+      description: 'Empty body (sent with `Content-Type: application/json`).'
+    DelayedMessage:
+      type: object
+      required: [response_type, text]
+      properties:
+        response_type: { type: string, const: ephemeral }
+        replace_original: { type: boolean }
+        text: { type: string }
+        blocks:
+          type: array
+          maxItems: 50
+          items: { type: object }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    AsyncTaskBase:
+      type: object
+      description: |
+        Internal Lambda `Event` self-invocation (not an HTTP route). Rejected with 403 unless `_task_secret`
+        matches `ASYNC_TASK_SECRET` (constant-time compare). Failures of non-idempotent tasks are logged and
+        returned, not raised, so Lambda does not retry them.
+      required: [_async_task, _task_secret]
+      properties:
+        _async_task:
+          type: string
+          enum: [request_worklog_approval, handle_approval_action, agent_request, jira_worklog, list_assigned_issues]
+        _task_secret: { type: string, writeOnly: true }
+    AsyncTaskRequestWorklogApproval:
+      allOf:
+        - $ref: '#/components/schemas/AsyncTaskBase'
+        - type: object
+          required: [slack_user_id, channel_id, form]
+          properties:
+            _async_task: { const: request_worklog_approval }
+            slack_user_id: { $ref: '#/components/schemas/SlackUserId' }
+            channel_id: { $ref: '#/components/schemas/SlackChannelId' }
+            form: { $ref: '#/components/schemas/LogTimeForm' }
+    AsyncTaskHandleApprovalAction:
+      allOf:
+        - $ref: '#/components/schemas/AsyncTaskBase'
+        - type: object
+          required: [approval_id, decision, slack_user_id, channel_id]
+          properties:
+            _async_task: { const: handle_approval_action }
+            approval_id: { $ref: '#/components/schemas/ApprovalId' }
+            decision: { type: string, enum: [approve_jira_write, reject_jira_write] }
+            slack_user_id: { $ref: '#/components/schemas/SlackUserId' }
+            channel_id: { $ref: '#/components/schemas/SlackChannelId' }
+            message_ts: { type: [string, 'null'] }
+    AsyncTaskAgentRequest:
+      allOf:
+        - $ref: '#/components/schemas/AsyncTaskBase'
+        - type: object
+          required: [slack_user_id, channel_id, text, response_url]
+          properties:
+            _async_task: { const: agent_request }
+            slack_user_id: { $ref: '#/components/schemas/SlackUserId' }
+            channel_id: { $ref: '#/components/schemas/SlackChannelId' }
+            text: { type: string }
+            response_url: { type: string, format: uri }
+    AsyncTaskJiraRead:
+      allOf:
+        - $ref: '#/components/schemas/AsyncTaskBase'
+        - type: object
+          required: [slack_user_id, account_id, response_url]
+          properties:
+            _async_task: { enum: [jira_worklog, list_assigned_issues] }
+            slack_user_id: { $ref: '#/components/schemas/SlackUserId' }
+            account_id: { type: string, description: Jira accountId of the connected user. }
+            response_url: { type: string, format: uri }

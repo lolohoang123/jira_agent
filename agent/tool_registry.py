@@ -5,7 +5,8 @@ from datetime import datetime
 from jira.jira_service import JiraService
 from util.dynamo_helper import DynamoHelper
 from util.common import validate_duration
-from approval.approval_service import ApprovalService
+from approval.approval_service import (ApprovalService, ApprovalDeliveryError, DuplicateApprovalError,
+                                       duplicate_approval_message, undelivered_approval_message)
 
 ALLOWED_INTENTS = {
     "list_assigned_issues", "get_today_worklogs", "get_issue_worklogs",
@@ -71,7 +72,12 @@ def execute_plan(plan, slack_user_id, channel_id):
             }
         # Ensure this Slack user has linked a Jira account before creating an approval.
         DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
-        approval = ApprovalService().request_worklog_approval(slack_user_id, channel_id, form)
+        try:
+            approval = ApprovalService().request_worklog_approval(slack_user_id, channel_id, form)
+        except DuplicateApprovalError:
+            return {"intent": "unknown", "message": duplicate_approval_message(form)}
+        except ApprovalDeliveryError:
+            return {"intent": "unknown", "message": undelivered_approval_message(form, channel_id)}
         return {"intent": intent, "approval_id": approval["approval_id"]}
 
     # Resolve the Jira account mapping before any read operation.

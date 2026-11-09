@@ -81,7 +81,9 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 |---|---|
 | `OAUTH_STATES_TABLE` | DynamoDB table name for OAuth state |
 | `OAUTH_USERS_TABLE` | DynamoDB table name for per-Slack-user connections |
-| `APPROVALS_TABLE` | DynamoDB table name for approvals |
+| `APPROVALS_TABLE` | DynamoDB table name for approvals (also holds short-lived `dedupe#…` rows that block identical requests for 24 h) |
+| `APPROVAL_RETENTION_DAYS` | Optional, default `90`. How long finished approvals (approved, rejected, failed, cancelled) are kept as an audit trail before TTL deletes them |
+| `MAX_WORKLOG_MINUTES` | Optional, default `1440` (24h). Largest duration a single worklog may have; `1d` = 8h and `1w` = 5d, as in Jira's defaults |
 | `BEDROCK_MODEL_ID` | Model ID or inference profile ID |
 | `BEDROCK_REGION` | Region used to call Bedrock |
 

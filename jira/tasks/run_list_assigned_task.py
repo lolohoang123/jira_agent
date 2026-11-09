@@ -16,7 +16,7 @@ class RunListAssignedTask:
             issues=service.find_assigned_issues(self.event["account_id"])
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,
                 "text":"Your assigned Jira tickets",
-                "blocks":build_assigned_issue_blocks(issues,service)})
+                "blocks":build_assigned_issue_blocks(issues,service.site_url)})
         except Exception:
             logger.exception("Failed to list assigned Jira issues")
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,

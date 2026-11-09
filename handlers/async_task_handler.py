@@ -22,11 +22,37 @@ def _notify_approval_result(event, user_id, message, update_original):
             logger.exception("Could not update approval message for Slack user %s", user_id)
 
 
+def _notify_user_directly(user_id, message):
+    """Best-effort DM from the bot: the original channel may be the reason delivery failed."""
+    from slack.slack_client import slack_api
+    try:
+        slack_api("chat.postMessage", {"channel": user_id, "text": message})
+    except Exception:
+        logger.exception("Could not notify Slack user %s directly", user_id)
+
+
 def handle_async_task(event):
+    # Async ("Event") invocations are retried by Lambda when the handler raises. The tasks below are
+    # not idempotent (a retry would create a second approval or repeat the agent reply), so failures
+    # are logged and returned instead of raised.
     task=event.get("_async_task")
     if task == "request_worklog_approval":
-        from approval.approval_service import ApprovalService
-        ApprovalService().request_worklog_approval(event["slack_user_id"], event["channel_id"], event["form"])
+        from approval.approval_service import (ApprovalService, ApprovalDeliveryError, DuplicateApprovalError,
+                                               duplicate_approval_message, undelivered_approval_message)
+        user_id = event["slack_user_id"]
+        try:
+            ApprovalService().request_worklog_approval(user_id, event["channel_id"], event["form"])
+        except DuplicateApprovalError:
+            _notify_user_directly(user_id, duplicate_approval_message(event["form"]))
+            return json_response(409, {"error": "duplicate_approval"})
+        except ApprovalDeliveryError:
+            _notify_user_directly(user_id, undelivered_approval_message(event["form"], event["channel_id"]))
+            return json_response(502, {"error": "approval_not_delivered"})
+        except Exception:
+            logger.exception("Could not create worklog approval for Slack user %s", user_id)
+            _notify_user_directly(user_id, "⚠️ Your worklog request could not be created. Nothing was logged to Jira. "
+                                           "Please try again.")
+            return json_response(500, {"error": "approval_request_failed"})
     elif task == "handle_approval_action":
         from approval.approval_service import ApprovalService
         service = ApprovalService()
@@ -50,15 +76,19 @@ def handle_async_task(event):
     elif task == "agent_request":
         from agent.orchestrator import AgentOrchestrator
         from slack.slack_client import post_slack_response
-        result = AgentOrchestrator().handle(
-            slack_user_id=event["slack_user_id"],
-            text=event["text"],
-            channel_id=event["channel_id"],
-        )
-        post_slack_response(event["response_url"], {
-            "response_type": "ephemeral",
-            "text": result.message,
-        })
+        try:
+            result = AgentOrchestrator().handle(
+                slack_user_id=event["slack_user_id"],
+                text=event["text"],
+                channel_id=event["channel_id"],
+            )
+            post_slack_response(event["response_url"], {
+                "response_type": "ephemeral",
+                "text": result.message,
+            })
+        except Exception:
+            logger.exception("Agent request failed for Slack user %s", event.get("slack_user_id"))
+            return json_response(500, {"error": "agent_request_failed"})
     elif task=="jira_worklog":
         RunTodayWorklogsTask(event).run_today_worklogs_task()
     elif task=="list_assigned_issues":

@@ -31,7 +31,8 @@ class JiraService:
         return issues
 
     def find_assigned_issues(self, account_id):
-        return self._search(f'assignee = "{account_id}" ORDER BY updated DESC', ["summary", "status"])
+        # "timespent" is Jira's total logged seconds per issue, so callers need no per-issue worklog calls.
+        return self._search(f'assignee = "{account_id}" ORDER BY updated DESC', ["summary", "status", "timespent"])
 
     def find_issues_with_worklogs_today(self, account_id, day):
         jql = f'worklogAuthor = "{account_id}" AND worklogDate = "{day:%Y/%m/%d}"'
