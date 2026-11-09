@@ -1,4 +1,5 @@
 import logging
+import urllib.error
 
 from approval.approval_repository import ApprovalRepository, DuplicateApprovalError  # noqa: F401 (re-export)
 from jira.jira_service import JiraService
@@ -29,6 +30,17 @@ def undelivered_approval_message(form, channel_id):
             "`/jira-agent` in a channel where it is a member, then try again.")
 
 
+def _delivery_unconfirmed(exc):
+    """True for timeouts/network errors, where Slack may still have posted the message.
+
+    An HTTP error response (``HTTPError``, a ``URLError`` subclass) or ``ok: false`` (``RuntimeError``
+    from ``slack_api``) means Slack definitely did not post it.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return isinstance(exc, (urllib.error.URLError, TimeoutError))
+
+
 class ApprovalService:
     def __init__(self, repository=None):
         self.repository = repository or ApprovalRepository()
@@ -48,6 +60,12 @@ class ApprovalService:
         try:
             self._post_approval_message(item, channel_id, form)
         except Exception as exc:
+            if _delivery_unconfirmed(exc):
+                # Slack may have posted it anyway: keep the approval PENDING (it expires in 24 h) rather than
+                # leaving visible buttons that refuse every click.
+                logger.warning("Delivery of approval %s is unconfirmed (Slack timeout); keeping it pending",
+                               item["approval_id"])
+                return item
             logger.warning("Could not post approval %s to Slack; cancelling it", item["approval_id"])
             try:
                 self.repository.cancel(item["approval_id"], reason=f"Slack delivery failed: {exc}")
@@ -81,15 +99,19 @@ class ApprovalService:
         item = self.repository.claim(approval_id, slack_user_id)
         if not item:
             return {"ok": False, "message": "This approval is expired, already handled, or does not belong to you."}
+        jira_written = False
         try:
             if item["action"] != "create_worklog":
                 raise ValueError("Unsupported approved action")
             result = JiraService(slack_user_id).create_worklog(item["form"])
+            jira_written = True
             self.repository.finish(approval_id, "APPROVED_EXECUTED")
             return {"ok": True, "result": result, "item": item}
         except Exception as exc:
             try:
-                self.repository.finish(approval_id, "EXECUTION_FAILED", error=exc)
+                # If Jira already has the worklog, keep the dedupe row so the same worklog cannot be
+                # submitted again within 24 h (TC-29).
+                self.repository.finish(approval_id, "EXECUTION_FAILED", error=exc, release=not jira_written)
             except Exception:
                 # Preserve the original Jira exception instead of masking it.
                 logger.exception("Could not mark approval %s as EXECUTION_FAILED", approval_id)

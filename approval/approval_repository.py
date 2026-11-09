@@ -145,7 +145,8 @@ class ApprovalRepository:
         self.release_dedupe(item)
         return item
 
-    def finish(self, approval_id, status, error=None):
+    def finish(self, approval_id, status, error=None, release=True):
+        """EXECUTING -> final status. ``release=False`` keeps the dedupe row on EXECUTION_FAILED."""
         now = int(time.time())
         values = {":status": status, ":executing": "EXECUTING", ":now": now,
                   ":ttl": now + retention_seconds()}
@@ -158,7 +159,7 @@ class ApprovalRepository:
                                         ExpressionAttributeValues=values,
                                         ConditionExpression="#s = :executing",
                                         ReturnValues="ALL_NEW")
-        if status == "EXECUTION_FAILED":
+        if status == "EXECUTION_FAILED" and release:
             # Let the user resubmit; the failure message tells them to check Jira first.
             self.release_dedupe(result.get("Attributes") or {})
 

@@ -1,5 +1,6 @@
 """Tests for spec gaps GAP-01 (duplicate approvals), GAP-02 (undelivered approvals),
 GAP-05 (approval retention) and GAP-08 (duration limits)."""
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -365,3 +366,98 @@ def test_gap08_modal_rejects_zero_duration():
     # Assert
     assert '"duration_block": "Duration must be greater than 0."' in response["body"]
     lambda_client.invoke.assert_not_called()
+
+
+# --------------------------------------------------------------------------------------
+# Review fixes [1]-[3] and R1
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("error", [
+    urllib.error.URLError("timed out"), TimeoutError("read timed out"),
+])
+def test_review1_slack_timeout_keeps_approval_pending(error):
+    # Arrange
+    repo = MagicMock(spec=ApprovalRepository)
+    repo.create_pending.return_value = {"approval_id": APPROVAL_ID}
+    service = ApprovalService(repo)
+    with patch("approval.approval_service.slack_api", side_effect=error):
+        # Act
+        item = service.request_worklog_approval(OWNER, "C1", FORM)
+
+    # Assert
+    assert item["approval_id"] == APPROVAL_ID
+    repo.cancel.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [
+    urllib.error.HTTPError("https://slack.com/api", 429, "Too Many Requests", {}, None),
+    RuntimeError("Slack API chat.postMessage failed: channel_not_found"),
+])
+def test_review1_definite_slack_failure_cancels(error):
+    # Arrange
+    repo = MagicMock(spec=ApprovalRepository)
+    repo.create_pending.return_value = {"approval_id": APPROVAL_ID}
+    service = ApprovalService(repo)
+    with patch("approval.approval_service.slack_api", side_effect=error):
+        # Act & Assert
+        with pytest.raises(ApprovalDeliveryError):
+            service.request_worklog_approval(OWNER, "C1", FORM)
+    repo.cancel.assert_called_once()
+
+
+@pytest.mark.parametrize("release,deleted", [(True, True), (False, False)])
+def test_review2_finish_failed_respects_release_flag(repo, table, release, deleted):
+    # Arrange
+    table.update_item.return_value = {"Attributes": {"approval_id": APPROVAL_ID, "dedupe_key": "abc"}}
+
+    # Act
+    repo.finish(APPROVAL_ID, "EXECUTION_FAILED", error="x", release=release)
+
+    # Assert
+    assert table.delete_item.called is deleted
+
+
+def test_review2_jira_failure_releases_but_post_jira_failure_does_not():
+    # Arrange
+    repo = MagicMock(spec=ApprovalRepository)
+    repo.claim.return_value = {"approval_id": APPROVAL_ID, "action": "create_worklog", "form": dict(FORM)}
+    service = ApprovalService(repo)
+    with patch("approval.approval_service.JiraService") as jira:
+        jira.return_value.create_worklog.side_effect = RuntimeError("Jira 500")
+
+        # Act
+        with pytest.raises(RuntimeError):
+            service.approve_and_execute(APPROVAL_ID, OWNER)
+
+    # Assert
+    assert repo.finish.call_args.kwargs["release"] is True
+
+
+@pytest.mark.parametrize("env_value,message", [
+    ("30", "at most 30m."), ("90", "at most 1h 30m."), ("120", "at most 2h."),
+])
+def test_review3_limit_message_formatting(monkeypatch, env_value, message):
+    # Arrange
+    monkeypatch.setenv("MAX_WORKLOG_MINUTES", env_value)
+
+    # Act & Assert
+    with pytest.raises(ValueError) as exc_info:
+        validate_duration("1w")
+    assert str(exc_info.value) == f"Duration must be {message}"
+
+
+def test_r1_generate_plan_does_not_print_prompt_or_output(capsys):
+    # Arrange
+    from agent.llm_client import BedrockLLMClient
+    client = MagicMock()
+    client.converse.return_value = {"output": {"message": {"content": [
+        {"text": '{"intent": "prepare_worklog", "parameters": {"description": "secret customer notes"}}'}]}}}
+    llm = BedrockLLMClient(client=client, model_id="test-model")
+
+    # Act
+    plan = llm.generate_plan("SYSTEM PROMPT", "log time")
+
+    # Assert
+    assert plan["intent"] == "prepare_worklog"
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""

@@ -198,14 +198,14 @@ def test_get_returns_item_or_none(repo, table, tc_id, response, expected):
 
 
 @pytest.mark.parametrize(
-    "tc_id,method,new_status,status_key,timestamp_field",
+    "tc_id,method,new_status,timestamp_field",
     [
-        ("TC-10", "claim", "EXECUTING", ":executing", "approved_at"),
-        ("TC-13", "reject", "REJECTED", ":rejected", "rejected_at"),
+        ("TC-10", "claim", "EXECUTING", "approved_at"),
+        ("TC-13", "reject", "REJECTED", "rejected_at"),
     ],
 )
 def test_owner_transition_from_pending_returns_attributes(
-        repo, table, tc_id, method, new_status, status_key, timestamp_field):
+        repo, table, tc_id, method, new_status, timestamp_field):
     # Arrange
     attributes = {"approval_id": APPROVAL_ID, "status": new_status}
     table.update_item.return_value = {"Attributes": attributes}
@@ -413,7 +413,8 @@ def test_tc26_approve_unsupported_action_fails_without_jira(fake_repo, jira_serv
     with pytest.raises(ValueError, match="Unsupported approved action") as exc_info:
         service.approve_and_execute(APPROVAL_ID, OWNER)
     jira_service.assert_not_called()
-    fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=exc_info.value)
+    fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=exc_info.value,
+                                             release=True)
 
 
 def test_tc27_approve_jira_failure_marks_failed_and_reraises(fake_repo, jira_service):
@@ -427,7 +428,7 @@ def test_tc27_approve_jira_failure_marks_failed_and_reraises(fake_repo, jira_ser
     with pytest.raises(RuntimeError) as exc_info:
         service.approve_and_execute(APPROVAL_ID, OWNER)
     assert exc_info.value is jira_error
-    fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=jira_error)
+    fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=jira_error, release=True)
 
 
 def test_tc28_approve_keeps_jira_error_when_finish_also_fails(fake_repo, jira_service, caplog):
@@ -448,6 +449,7 @@ def test_tc28_approve_keeps_jira_error_when_finish_also_fails(fake_repo, jira_se
 
 def test_tc29_finish_executed_failure_after_jira_success_marks_failed(fake_repo, jira_service):
     # Pins current behaviour: the Jira write already happened, yet the row ends EXECUTION_FAILED.
+    # The dedupe row is kept (release=False) so the same worklog cannot be resubmitted.
     # Arrange
     fake_repo.claim.return_value = claimed_item()
     jira_service.return_value.create_worklog.return_value = {"id": "10001"}
@@ -461,7 +463,7 @@ def test_tc29_finish_executed_failure_after_jira_success_marks_failed(fake_repo,
     assert exc_info.value is ddb_error
     jira_service.return_value.create_worklog.assert_called_once()
     assert [c.args + tuple(c.kwargs.values()) for c in fake_repo.finish.call_args_list] == [
-        (APPROVAL_ID, "APPROVED_EXECUTED"), (APPROVAL_ID, "EXECUTION_FAILED", ddb_error)]
+        (APPROVAL_ID, "APPROVED_EXECUTED"), (APPROVAL_ID, "EXECUTION_FAILED", ddb_error, False)]
 
 
 @pytest.mark.parametrize(

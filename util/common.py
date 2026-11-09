@@ -46,5 +46,7 @@ def validate_duration(duration):
         raise ValueError("Duration must be greater than 0.")
     limit = max_worklog_minutes()
     if minutes > limit:
-        raise ValueError(f"Duration must be at most {limit // 60}h{f' {limit % 60}m' if limit % 60 else ''}.")
+        hours, rest = divmod(limit, 60)
+        text = " ".join(part for part in (f"{hours}h" if hours else "", f"{rest}m" if rest else "") if part)
+        raise ValueError(f"Duration must be at most {text}.")
     return duration
