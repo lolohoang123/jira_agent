@@ -81,6 +81,9 @@ class ApprovalRepository:
             "expires_at": now + ttl_seconds,
             "ttl": now + ttl_seconds,
         }
+        if approval.get("jira_cloud_id"):
+            # Site the request was made for; the claim refuses to write anywhere else (SC-01).
+            item["jira_cloud_id"] = approval["jira_cloud_id"]
         dedupe_item = {
             "approval_id": DEDUPE_PREFIX + dedupe_key,
             "target_approval_id": item["approval_id"],
@@ -146,7 +149,7 @@ class ApprovalRepository:
         return item
 
     def finish(self, approval_id, status, error=None, release=True):
-        """EXECUTING -> final status. ``release=False`` keeps the dedupe row on EXECUTION_FAILED."""
+        """EXECUTING -> final status. ``release=False`` keeps the dedupe row on EXECUTION_FAILED/CANCELLED."""
         now = int(time.time())
         values = {":status": status, ":executing": "EXECUTING", ":now": now,
                   ":ttl": now + retention_seconds()}
@@ -159,7 +162,7 @@ class ApprovalRepository:
                                         ExpressionAttributeValues=values,
                                         ConditionExpression="#s = :executing",
                                         ReturnValues="ALL_NEW")
-        if status == "EXECUTION_FAILED" and release:
+        if status in ("EXECUTION_FAILED", "CANCELLED") and release:
             # Let the user resubmit; the failure message tells them to check Jira first.
             self.release_dedupe(result.get("Attributes") or {})
 

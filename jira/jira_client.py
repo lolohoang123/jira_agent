@@ -17,6 +17,10 @@ class JiraClient:
         self.credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials(slack_user_id)
 
     @property
+    def cloud_id(self):
+        return self.credentials["cloud_id"]
+
+    @property
     def site_url(self):
         return (self.credentials.get("jira_site_url") or os.environ.get("JIRA_BASE_URL", "")).rstrip("/")
 

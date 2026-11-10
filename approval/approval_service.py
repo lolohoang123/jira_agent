@@ -5,8 +5,16 @@ from approval.approval_repository import ApprovalRepository, DuplicateApprovalEr
 from jira.jira_service import JiraService
 from slack.slack_client import slack_api
 from util.common import slack_escape
+from util.dynamo_helper import DynamoHelper
 
 logger = logging.getLogger(__name__)
+
+SITE_CHANGED_MESSAGE = ("Your Jira connection now points to a different Jira site than when this worklog was "
+                        "requested, so nothing was logged. Submit the worklog again if you still need it.")
+
+
+def current_jira_cloud_id(slack_user_id):
+    return DynamoHelper("OAUTH_USERS_TABLE").get_jira_cloud_id_for_slack_user(slack_user_id)
 
 
 class ApprovalDeliveryError(Exception):
@@ -42,8 +50,9 @@ def _delivery_unconfirmed(exc):
 
 
 class ApprovalService:
-    def __init__(self, repository=None):
+    def __init__(self, repository=None, cloud_id_resolver=None):
         self.repository = repository or ApprovalRepository()
+        self._cloud_id_resolver = cloud_id_resolver
 
     def request_worklog_approval(self, slack_user_id, channel_id, form):
         """Create a PENDING approval and post its Approve/Reject message.
@@ -51,11 +60,13 @@ class ApprovalService:
         Raises DuplicateApprovalError for an identical pending/recently approved worklog, and
         ApprovalDeliveryError (after cancelling the approval) when Slack rejects the message.
         """
+        resolve = self._cloud_id_resolver or current_jira_cloud_id
         item = self.repository.create_pending({
             "slack_user_id": slack_user_id,
             "channel_id": channel_id,
             "action": "create_worklog",
             "form": form,
+            "jira_cloud_id": resolve(slack_user_id),
         })
         try:
             self._post_approval_message(item, channel_id, form)
@@ -103,7 +114,15 @@ class ApprovalService:
         try:
             if item["action"] != "create_worklog":
                 raise ValueError("Unsupported approved action")
-            result = JiraService(slack_user_id).create_worklog(item["form"])
+            jira = JiraService(slack_user_id)
+            expected_site = item.get("jira_cloud_id")
+            # Compare with the credentials this JiraService will write with, so a reconnect cannot slip in
+            # between the check and the write. Rows created before SC-01 have no site and are not checked.
+            if expected_site and jira.cloud_id != expected_site:
+                logger.warning("Approval %s refused: Jira site changed since the request", approval_id)
+                self.repository.finish(approval_id, "CANCELLED", error="Jira site changed since the request")
+                return {"ok": False, "message": SITE_CHANGED_MESSAGE}
+            result = jira.create_worklog(item["form"])
             jira_written = True
             self.repository.finish(approval_id, "APPROVED_EXECUTED")
             return {"ok": True, "result": result, "item": item}

@@ -52,6 +52,7 @@ erDiagram
         string action "create_worklog"
         map form "issue_key, date, start_time, duration, description, remaining_estimate, new_estimate"
         string status "PENDING, EXECUTING, APPROVED_EXECUTED, EXECUTION_FAILED, REJECTED, CANCELLED"
+        string jira_cloud_id "Jira site at request time, checked before the write (SC-01)"
         string dedupe_key "sha256 of user, issue, date, start, duration"
         number created_at
         number expires_at "Approve deadline, created + 24h"
@@ -113,6 +114,7 @@ stateDiagram-v2
     PENDING --> Expired : expires_at passed, buttons refuse
     EXECUTING --> APPROVED_EXECUTED : Jira worklog created
     EXECUTING --> EXECUTION_FAILED : Jira error or bad action
+    EXECUTING --> CANCELLED : Jira site changed since the request (SC-01)
     APPROVED_EXECUTED --> [*]
     EXECUTION_FAILED --> [*]
     REJECTED --> [*]
@@ -121,6 +123,10 @@ stateDiagram-v2
 ```
 
 - Only `PENDING → EXECUTING` leads to a Jira write, and only `handle_approval_action` performs it.
+- Site binding (SC-01): `jira_cloud_id` is stored at creation. After the claim, it is compared with the cloud
+  id of the credentials that will perform the write; on a mismatch (user reconnected to another site) the
+  approval ends `CANCELLED` and nothing is written. Rows created before SC-01 have no `jira_cloud_id` and are
+  not checked.
 - The dedupe row is released on `REJECTED`, `CANCELLED` and `EXECUTION_FAILED`, so the user can resubmit.
   After `APPROVED_EXECUTED` it keeps blocking an identical worklog for 24 h.
 - `Expired` is not stored: the row stays `PENDING` until TTL removes it, and the time check in the condition
@@ -276,6 +282,11 @@ sequenceDiagram
         A->>SL: Ephemeral refusal (original message untouched)
     else Claimed
         DB-->>S: approval row
+        alt Current Jira site != approval jira_cloud_id
+            S->>DB: finish CANCELLED, release dedupe row
+            S-->>A: ok false
+            A->>SL: Ephemeral "Jira site changed, nothing logged"
+        else Same site (or legacy row without jira_cloud_id)
         S->>J: POST issue worklog (timeout 20 s)
         alt Jira success
             J-->>S: 201 worklog
@@ -290,6 +301,7 @@ sequenceDiagram
             end
             S-->>A: exception (logged, not retried)
             A->>SL: Ephemeral "check Jira before submitting again"
+        end
         end
     end
 ```
@@ -370,6 +382,7 @@ sequenceDiagram
 | 4 | `ApprovalRepository` (transaction) | Create PENDING approval and dedupe row | Live dedupe row exists | `DuplicateApprovalError` → user notified, nothing stored |
 | 5 | `ApprovalService` | Post Approve/Reject message | Slack error | Cancel approval and release dedupe row → `ApprovalDeliveryError` → user notified |
 | 6 | `ApprovalRepository` | Owner clicks Approve: conditional claim to EXECUTING | Not owner, expired, already handled | Ephemeral refusal, row unchanged |
+| 6b | `ApprovalService` | Compare `jira_cloud_id` with the site of the write credentials | Site changed (reconnect) | `CANCELLED`, dedupe released, user told nothing was logged (SC-01) |
 | 7 | `JiraService` | POST worklog | Jira error or timeout | `EXECUTION_FAILED`, dedupe released, user told to check Jira. Not retried by Lambda |
 | 8 | `ApprovalRepository` | Finish `APPROVED_EXECUTED`, extend `ttl` to retention | DynamoDB error after Jira success | Known gap TC-29: row ends `EXECUTION_FAILED` |
 | 9 | `AsyncTaskHandler` | Notify user, replace buttons on success | Slack error | Logged only, best effort |

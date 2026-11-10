@@ -14,6 +14,11 @@ class JiraService:
         self.slack_user_id = slack_user_id
 
     @property
+    def cloud_id(self):
+        """Cloud id of the site every request from this service goes to."""
+        return self.client.cloud_id
+
+    @property
     def site_url(self):
         return self.client.site_url
 

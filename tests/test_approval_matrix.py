@@ -318,7 +318,8 @@ def test_tc20_request_creates_pending_and_posts_buttons(fake_repo, slack_api):
     # Assert
     assert item["approval_id"] == APPROVAL_ID
     fake_repo.create_pending.assert_called_once_with(
-        {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM})
+        {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM,
+         "jira_cloud_id": "cloud-test"})
     method, payload = slack_api.call_args.args
     assert method == "chat.postMessage"
     assert payload["channel"] == "C1"

@@ -57,6 +57,20 @@ class DynamoHelper:
             raise ValueError("Jira account is not connected. Run `/jira-agent connect` first.")
         return account_id
 
+    def get_jira_cloud_id_for_slack_user(self, slack_user_id):
+        """Cloud id of the Jira site this Slack user is connected to (no token refresh)."""
+        if not slack_user_id:
+            raise ValueError("Could not identify the Slack user.")
+        result = self.oauth_table().get_item(
+            Key={"slack_user_id": slack_user_id},
+            ProjectionExpression="jiraCloudId",
+            ConsistentRead=True,
+        )
+        cloud_id = (result.get("Item") or {}).get("jiraCloudId")
+        if not cloud_id:
+            raise ValueError("Jira account is not connected. Run `/jira-agent connect` first.")
+        return cloud_id
+
     def create_oauth_authorization_url(self, slack_user_id):
         if not slack_user_id:
             raise ValueError("Could not identify the Slack user.")
