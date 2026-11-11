@@ -36,6 +36,13 @@ Parameters:
   ApprovalRetentionDays:
     Type: Number
     Default: 90
+  AgentEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Natural-language assistant (Bedrock). Temporarily disabled; the code is kept. Set the GitHub
+      environment variable AGENT_ENABLED=true to turn it back on without a code change.
   AgentRateLimitPerHour:
     Type: Number
     Default: 20
@@ -221,6 +228,7 @@ Resources:
           JIRA_BASE_URL: !Ref JiraBaseUrl
           APPROVAL_DELIVERY: !Ref ApprovalDelivery
           APPROVAL_RETENTION_DAYS: !Ref ApprovalRetentionDays
+          AGENT_ENABLED: !Ref AgentEnabled
           AGENT_RATE_LIMIT_PER_HOUR: !Ref AgentRateLimitPerHour
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref OAuthStatesTable }

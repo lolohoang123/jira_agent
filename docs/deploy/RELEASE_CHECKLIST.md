@@ -116,7 +116,7 @@ console if a step looks different.
 | 4 | A second user looks in the channel | Sees nothing about the worklog (only the owner's DM has it) |
 | 5 | Approve | Worklog appears in Jira once; DM buttons replaced by "created successfully" |
 | 6 | Submit the identical worklog again | DM: "identical worklog request … already" |
-| 7 | 21 free-text requests within an hour | 21st reply: "limit of 20 assistant requests per hour" |
+| 7 | Any free-text request (assistant disabled, `AGENT_ENABLED=false`) | "assistant is temporarily disabled" with the list of commands. When re-enabled: 21st request within an hour gets "limit of 20 assistant requests per hour" |
 | 8 | `/jira-agent disconnect`, then `/jira-agent list` | "disconnected …", then "not connected" |
 | 9 | CloudWatch | No errors; logs contain no tokens or descriptions; alarms in OK state |
 

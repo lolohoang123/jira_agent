@@ -9,6 +9,7 @@
 - Approval: stores a PENDING record in DynamoDB and the bot sends the Approve/Reject buttons as a **private DM** to the requester (`APPROVAL_DELIVERY=dm`, default; `channel` posts in the channel instead); only the Slack user who created the request can approve or reject it. Approve uses a conditional update PENDING → EXECUTING to prevent repeated clicks, and only then creates the worklog.
 - Bedrock Agent: uses the Converse API to turn natural-language commands into a JSON plan; the backend only executes intents on the allow-list. Natural-language requests run asynchronously so Slack gets an ACK within the time limit.
 - Natural-language requests are rate-limited per user (`AGENT_RATE_LIMIT_PER_HOUR`, default 20) to cap Bedrock cost.
+- **The natural-language assistant is currently disabled** (`AGENT_ENABLED=false`, template parameter `AgentEnabled`, default `false`). Free text gets a list of available commands; no Bedrock call is made. The code is kept: set the GitHub environment variable `AGENT_ENABLED=true` to turn it back on.
 - Access token refresh, storing the new refresh token; expiry is stored as Unix seconds, with backward-compatible reads of old records stored in milliseconds.
 
 ## Structure
@@ -97,6 +98,7 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 | `SECRET_CACHE_SECONDS` | Optional, default `300`. How long secrets are cached before SSM is read again (rotation delay) |
 | `APPROVAL_DELIVERY` | Optional, `dm` (default) or `channel` |
 | `RATE_LIMITS_TABLE` | DynamoDB table for per-user rate limits (PK `limit_key`, TTL `ttl`). Unset = no limit |
+| `AGENT_ENABLED` | `false` disables the natural-language assistant (Bedrock); unset = enabled (local/tests). Deployed stacks currently set `false` |
 | `AGENT_RATE_LIMIT_PER_HOUR` | Optional, default `20`. `0` disables the limit |
 
 > Secrets (`SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `ATLASSIAN_CLIENT_SECRET`, `ASYNC_TASK_SECRET`) are read only through `util/config.get_secret`: from SSM Parameter Store in AWS (`/jira-agent/<stage>/slack-signing-secret`, ...), from the environment locally. Guardrail G9 fails the build if code reads them from `os.environ`.

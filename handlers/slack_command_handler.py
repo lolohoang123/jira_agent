@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 from handlers.slack_action_handler import handle_block_actions, handle_view_submission
 from jira.authentication_jira import AuthenticationJira
 from util.common import json_response
-from util.config import get_secret
+from util.config import AGENT_DISABLED_MESSAGE, agent_enabled, get_secret
 from util.rate_limit import agent_limit_message, agent_request_allowed
 from util.dynamo_helper import DynamoHelper
 
@@ -65,6 +65,9 @@ def handle_slack_request(event, context, raw_body, lambda_client):
 
     supported = {"logwork today", "list"}
     if normalized not in supported:
+        if not agent_enabled():
+            # Checked before the rate limit and the async invoke: no Bedrock call, no counter used.
+            return json_response(200, {"response_type": "ephemeral", "text": AGENT_DISABLED_MESSAGE})
         if not agent_request_allowed(slack_user_id):
             return json_response(200, {"response_type": "ephemeral", "text": agent_limit_message()})
         task = {

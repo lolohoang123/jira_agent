@@ -76,6 +76,15 @@ def handle_async_task(event):
     elif task == "agent_request":
         from agent.orchestrator import AgentOrchestrator
         from slack.slack_client import post_slack_response
+        from util.config import AGENT_DISABLED_MESSAGE, agent_enabled
+        if not agent_enabled():
+            # Requests queued before the flag was turned off: answer without calling Bedrock.
+            try:
+                post_slack_response(event["response_url"], {"response_type": "ephemeral",
+                                                            "text": AGENT_DISABLED_MESSAGE})
+            except Exception:
+                logger.exception("Could not send agent-disabled notice to Slack user %s", event.get("slack_user_id"))
+            return json_response(200, {"ok": False, "error": "agent_disabled"})
         try:
             result = AgentOrchestrator().handle(
                 slack_user_id=event["slack_user_id"],

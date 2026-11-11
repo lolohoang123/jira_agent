@@ -285,3 +285,12 @@ def test_boundary_allows_what_the_function_needs_and_nothing_admin(bootstrap):
     assert {"dynamodb:UpdateItem", "ssm:GetParameters", "lambda:InvokeFunction", "bedrock:InvokeModel",
             "sqs:SendMessage", "logs:PutLogEvents", "kms:Decrypt"} <= actions
     assert not any(a.startswith("iam:") or a.endswith(":*") for a in actions)
+
+
+def test_agent_flag_is_wired_and_off_by_default(template, function):
+    # Assert: the assistant is temporarily disabled in AWS; GitHub var AGENT_ENABLED can turn it back on
+    assert template["Parameters"]["AgentEnabled"]["Default"] == "false"
+    assert template["Parameters"]["AgentEnabled"]["AllowedValues"] == ["true", "false"]
+    assert function["Environment"]["Variables"]["AGENT_ENABLED"] == {"Ref": "AgentEnabled"}
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    assert 'overrides+=("AgentEnabled=$AGENT_ENABLED")' in workflow

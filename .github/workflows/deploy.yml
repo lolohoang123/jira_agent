@@ -75,6 +75,8 @@ jobs:
           ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
           # 0 (default) = no reserved concurrency; raise only after the account quota allows it.
           RESERVED_CONCURRENCY: ${{ vars.RESERVED_CONCURRENCY || '0' }}
+          # Natural-language assistant; unset keeps the template default (disabled).
+          AGENT_ENABLED: ${{ vars.AGENT_ENABLED }}
         run: |
           missing=""
           for name in AWS_REGION_VAR ATLASSIAN_CLIENT_ID BEDROCK_MODEL_ID; do
@@ -94,6 +96,7 @@ jobs:
             "ReservedConcurrency=$RESERVED_CONCURRENCY"
           )
           [ -n "$ALARM_EMAIL" ] && overrides+=("AlarmEmail=$ALARM_EMAIL")
+          [ -n "$AGENT_ENABLED" ] && overrides+=("AgentEnabled=$AGENT_ENABLED")
           sam deploy --config-env "$STAGE" --region "$AWS_REGION_VAR" \
             --no-confirm-changeset --no-fail-on-empty-changeset \
             --parameter-overrides "${overrides[@]}"

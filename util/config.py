@@ -48,6 +48,22 @@ def get_secret(name, default=_MISSING):
     raise KeyError(name)
 
 
+def agent_enabled():
+    """Feature flag for the natural-language assistant (Bedrock). ``AGENT_ENABLED=false`` disables it.
+
+    Unset means enabled (local development and tests); the SAM template sets it explicitly per stage.
+    The agent code stays in place: only the entry points check this flag.
+    """
+    return os.environ.get("AGENT_ENABLED", "true").strip().lower() not in {"false", "0", "no", "off"}
+
+
+AGENT_DISABLED_MESSAGE = (
+    "The natural-language assistant is temporarily disabled. Available commands: "
+    "`/jira-agent list`, `/jira-agent logwork today`, `/jira-agent connect`, `/jira-agent disconnect`. "
+    "To log time, use the *Log Time* button in `/jira-agent list` or `/jira-agent logwork today`."
+)
+
+
 def clear_cache():
     """Drop cached secrets (tests, or after a known rotation)."""
     global _loaded_at
