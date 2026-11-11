@@ -5,10 +5,13 @@ Description: >-
   Deploy once per AWS account (region ap-southeast-1) with an administrator MFA session.
 
 Parameters:
-  GitHubRepository:
+  GitHubSubjectRepository:
     Type: String
-    Default: lolohoang123/jira_agent
-    Description: owner/repo allowed to assume the deploy roles.
+    Default: lolohoang123@6188421/jira_agent@1445373052
+    Description: >-
+      Repository part of the GitHub OIDC "sub" claim, exactly as GitHub sends it. This repository uses
+      immutable identifiers (owner@ownerId/repo@repoId), so a renamed or re-created repository with the same
+      name cannot assume the roles. Read it from CloudTrail (AssumeRoleWithWebIdentity, userIdentity.principalId).
   CreateOidcProvider:
     Type: String
     Default: "true"
@@ -102,7 +105,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:staging
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubSubjectRepository}:environment:staging
       ManagedPolicyArns: [!Ref StagingDeployPolicy]
 
   ProdDeployRole:
@@ -121,7 +124,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:prod
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubSubjectRepository}:environment:prod
       ManagedPolicyArns: [!Ref ProdDeployPolicy]
 
   StagingDeployPolicy:

@@ -178,8 +178,9 @@ def test_deploy_role_trusts_only_this_repo_and_environment(bootstrap, role, stag
     assert set(condition) == {"StringEquals"}
     assert condition["StringEquals"]["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
     assert condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == {
-        "Sub": f"repo:${{GitHubRepository}}:environment:{stage}"}
-    assert bootstrap["Parameters"]["GitHubRepository"]["Default"] == "lolohoang123/jira_agent"
+        "Sub": f"repo:${{GitHubSubjectRepository}}:environment:{stage}"}
+    # GitHub sends immutable ids (owner@id/repo@id); verified from CloudTrail on the first deploy.
+    assert bootstrap["Parameters"]["GitHubSubjectRepository"]["Default"] == "lolohoang123@6188421/jira_agent@1445373052"
 
 
 @pytest.mark.parametrize("policy,stage,other", [("StagingDeployPolicy", "staging", "prod"),

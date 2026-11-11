@@ -35,7 +35,16 @@ aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/
 ### 2a. AWS side (done once per account): `infra/github-oidc-bootstrap.yaml`
 
 Creates the GitHub OIDC provider, `jira-agent-github-deploy-staging` / `-prod` (trusted only for
-`repo:lolohoang123/jira_agent:environment:<stage>`), and the permissions boundary `jira-agent-function-boundary`.
+`repo:lolohoang123@6188421/jira_agent@1445373052:environment:<stage>`), and the permissions boundary
+`jira-agent-function-boundary`.
+
+This repository's OIDC `sub` claim uses **immutable ids** (`owner@id/repo@id`), not `owner/repo`. If a deploy fails
+with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, read the exact claim GitHub sent from CloudTrail and
+set the `GitHubSubjectRepository` parameter to its repository part:
+
+```bash
+aws cloudtrail lookup-events --profile mfa --region ap-southeast-1   --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity --max-results 3   --query "Events[].CloudTrailEvent" --output text   # see userIdentity.principalId
+```
 The deploy roles can only create IAM roles that carry this boundary, so a compromised workflow cannot create an
 administrator role. Deploy with an administrator MFA session (Windows/Git Bash: `export MSYS_NO_PATHCONV=1`):
 
