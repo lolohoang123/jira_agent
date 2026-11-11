@@ -74,7 +74,7 @@ def test_async_retries_are_disabled_and_failures_are_kept(template, function):
 def test_cost_and_abuse_caps(template, function):
     # Assert
     assert function["ReservedConcurrentExecutions"] == {"Ref": "ReservedConcurrency"}
-    throttle = template["Resources"]["JiraAgentApi"]["Properties"]["DefaultRouteSettings"]
+    throttle = template["Resources"]["JiraAgentApiStage"]["Properties"]["DefaultRouteSettings"]
     assert set(throttle) == {"ThrottlingRateLimit", "ThrottlingBurstLimit"}
     variables = function["Environment"]["Variables"]
     assert variables["RATE_LIMITS_TABLE"] == {"Ref": "RateLimitsTable"}
@@ -110,14 +110,76 @@ def test_tables_ttl_encryption_and_backup(template, table, ttl_attribute, pitr):
 
 def test_routes_and_callback_url(template, function):
     # Arrange
-    events = function["Events"]
+    resources = template["Resources"]
+    routes = {r["Properties"]["RouteKey"]: r["Properties"]["Target"] for r in resources.values()
+              if r["Type"] == "AWS::ApiGatewayV2::Route"}
+    integration = resources["JiraAgentIntegration"]["Properties"]
+    permission = resources["ApiInvokePermission"]["Properties"]
 
-    # Assert
-    assert {(e["Properties"]["Path"], e["Properties"]["Method"]) for e in events.values()} == {
-        ("/", "POST"), ("/oauth/callback", "GET")}
+    # Assert: exactly the two public routes, both proxied to the function, invokable only from this API
+    assert routes == {"POST /": {"Sub": "integrations/${JiraAgentIntegration}"},
+                      "GET /oauth/callback": {"Sub": "integrations/${JiraAgentIntegration}"}}
+    assert integration["IntegrationUri"] == {"GetAtt": "JiraAgentFunction.Arn"}
+    assert integration["PayloadFormatVersion"] == "2.0"  # handler reads rawPath / requestContext.http
+    assert permission["Principal"] == "apigateway.amazonaws.com"
+    assert permission["SourceArn"] == {"Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${JiraAgentApi}/*"}
     redirect = function["Environment"]["Variables"]["ATLASSIAN_REDIRECT_URI"]["Sub"]
     callback_output = template["Outputs"]["OAuthCallbackUrl"]["Value"]["Sub"]
     assert redirect == callback_output and redirect.endswith("/oauth/callback")
+
+
+def _references(node):
+    """Logical ids referenced by Ref, GetAtt and ${...} in Sub (pseudo parameters excluded)."""
+    found = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "Ref" and isinstance(value, str):
+                found.add(value)
+            elif key == "GetAtt":
+                found.add((value.split(".")[0] if isinstance(value, str) else value[0]))
+            elif key == "Sub":
+                text = value if isinstance(value, str) else value[0]
+                found |= {m.split(".")[0] for m in re.findall(r"\$\{([^}!]+)\}", text)}
+            found |= _references(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _references(item)
+    return found
+
+
+def test_no_circular_dependencies_including_sam_implicit_ones(template):
+    # Arrange: explicit edges (Ref/GetAtt/Sub/DependsOn) plus the edges SAM adds when a function has
+    # API events: the API resource embeds the routes, so the API depends on the function.
+    resources = template["Resources"]
+    graph = {}
+    for name, resource in resources.items():
+        depends = resource.get("DependsOn", [])
+        depends = [depends] if isinstance(depends, str) else depends
+        graph[name] = (_references(resource.get("Properties", {})) | set(depends)) & set(resources)
+    for name, resource in resources.items():
+        for event in (resource.get("Properties", {}).get("Events") or {}).values():
+            api = _references(event.get("Properties", {}).get("ApiId", {}))
+            for api_name in api & set(resources):
+                graph[api_name].add(name)
+
+    # Act: depth-first search for a back edge
+    state, cycle = {}, []
+
+    def visit(node, path):
+        state[node] = "visiting"
+        for nxt in graph[node]:
+            if state.get(nxt) == "visiting":
+                cycle.extend(path + [node, nxt])
+                return True
+            if nxt not in state and visit(nxt, path + [node]):
+                return True
+        state[node] = "done"
+        return False
+
+    has_cycle = any(visit(n, []) for n in graph if n not in state)
+
+    # Assert
+    assert not has_cycle, " -> ".join(cycle)
 
 
 def test_runtime_and_handler(template, function):
