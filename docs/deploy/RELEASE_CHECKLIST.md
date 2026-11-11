@@ -112,6 +112,7 @@ console if a step looks different.
 |---|---|---|
 | 1 | `/jira-agent connect` → open link → consent | "Jira connected successfully" page |
 | 2 | `/jira-agent list` | Your assigned tickets with links to your Jira site |
+| 2b | `/jira-agent logwork find <word from a ticket title>`, then an issue key | Matching tickets with total logged time; the key is listed first; Log Time opens the modal |
 | 3 | Log Time from a ticket → submit | Approval arrives as a **DM** from the bot; nothing in the channel |
 | 4 | A second user looks in the channel | Sees nothing about the worklog (only the owner's DM has it) |
 | 5 | Approve | Worklog appears in Jira once; DM buttons replaced by "created successfully" |

@@ -335,6 +335,14 @@ sequenceDiagram
 `logwork today` follows the same path with task `jira_worklog`: issues with worklogs today, then each issue's
 worklogs filtered to the user and to today in `JIRA_TIMEZONE` (at most 23 shown; Slack allows 50 blocks).
 
+`logwork find <keyword>` (alias `find <keyword>`) follows the same path with task `search_issues`:
+- the keyword is reduced to plain terms (`jql_text_terms`: quotes, backslashes and JQL/Lucene operators removed,
+  100 characters max), so user text can never change the JQL structure; an empty result gets a usage hint;
+- one search `text ~ "<terms>" ORDER BY updated DESC` with `maxResults` 21 (20 shown, the 21st only signals
+  "more than 20 match"); if the keyword is an issue key it is also fetched directly and listed first;
+- each row shows the link, status, total logged time (`timespent`) and a **Log Time** button that opens the
+  existing modal, so the worklog still goes through the approval flow (4.3, 4.4).
+
 ### 4.3 Log Time modal → approval request (DM)
 
 ```mermaid

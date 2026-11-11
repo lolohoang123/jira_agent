@@ -56,9 +56,11 @@ paths:
         | `connect` | Creates a one-time OAuth state (10 min) | Ephemeral message with the *Connect Jira* link |
         | `list` | Async task `list_assigned_issues` | "Fetching your Jira data..." |
         | `logwork today` | Async task `jira_worklog` | "Fetching your Jira data..." |
-        | anything else | Async task `agent_request` (Bedrock plans, allow-listed execution) | "I'm processing your Jira request..." |
+        | `logwork find <keyword>` or `find <keyword>` | Async task `search_issues` (JQL text search, up to 20 tickets with total logged time and Log Time buttons) | "Searching Jira tickets..." (usage hint if the keyword is empty) |
+        | `disconnect` | Deletes the user's Jira connection and tokens | Ephemeral confirmation |
+        | anything else | Async task `agent_request` (Bedrock plans, allow-listed execution). Currently disabled (`AGENT_ENABLED=false`): reply lists the available commands | "I'm processing your Jira request..." |
 
-        `list` and `logwork today` first check that the user has connected Jira; if not, the reply is
+        `list`, `logwork today` and `logwork find` first check that the user has connected Jira; if not, the reply is
         "Your Jira account is not connected. Run `/jira-agent connect` first." (still HTTP 200).
         A command other than `/jira-agent` gets a 200 hint to use `/jira-agent`.
       security:
@@ -437,7 +439,8 @@ components:
       properties:
         _async_task:
           type: string
-          enum: [request_worklog_approval, handle_approval_action, agent_request, jira_worklog, list_assigned_issues]
+          enum: [request_worklog_approval, handle_approval_action, agent_request, jira_worklog, list_assigned_issues,
+                 search_issues]
         _task_secret: { type: string, writeOnly: true }
     AsyncTaskRequestWorklogApproval:
       allOf:

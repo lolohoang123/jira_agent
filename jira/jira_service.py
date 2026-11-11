@@ -8,6 +8,19 @@ from jira.jira_client import JiraClient
 from util.common import validate_duration
 
 
+ISSUE_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+")
+SEARCH_LIMIT = 20
+MAX_KEYWORD_LENGTH = 100
+# JQL string delimiters and Lucene operators: removed so user text can only ever be search terms.
+_JQL_SPECIAL = re.compile(r"""["'\\+\-&|!(){}\[\]^~*?:/;,<>=]""")
+
+
+def jql_text_terms(keyword):
+    """Turn free user text into safe terms for ``text ~ "<terms>"`` (never JQL syntax)."""
+    cleaned = _JQL_SPECIAL.sub(" ", str(keyword or ""))[:MAX_KEYWORD_LENGTH]
+    return " ".join(cleaned.split())
+
+
 class JiraService:
     def __init__(self, slack_user_id):
         self.client = JiraClient(slack_user_id)
@@ -22,10 +35,10 @@ class JiraService:
     def site_url(self):
         return self.client.site_url
 
-    def _search(self, jql, fields, max_pages=10):
+    def _search(self, jql, fields, max_pages=10, page_size=100):
         issues, token = [], None
         for _ in range(max_pages):
-            body = {"jql": jql, "fields": fields, "maxResults": 100}
+            body = {"jql": jql, "fields": fields, "maxResults": page_size}
             if token:
                 body["nextPageToken"] = token
             result = self.client.request("/rest/api/3/search/jql", method="POST", data=body)
@@ -38,6 +51,32 @@ class JiraService:
     def find_assigned_issues(self, account_id):
         # "timespent" is Jira's total logged seconds per issue, so callers need no per-issue worklog calls.
         return self._search(f'assignee = "{account_id}" ORDER BY updated DESC', ["summary", "status", "timespent"])
+
+    def search_issues(self, keyword, limit=SEARCH_LIMIT):
+        """Issues the user can see that match ``keyword``, most recently updated first.
+
+        Returns up to ``limit + 1`` issues so callers can tell whether more exist. An exact issue key
+        (e.g. PROJ-12) is fetched directly and listed first, because JQL text search ignores keys.
+        """
+        terms = jql_text_terms(keyword)
+        if not terms:
+            raise ValueError("Search keyword is empty.")
+        fields = ["summary", "status", "timespent"]
+        issues = self._search(f'text ~ "{terms}" ORDER BY updated DESC', fields,
+                              max_pages=1, page_size=limit + 1)
+        key = keyword.strip().upper()
+        if ISSUE_KEY_RE.fullmatch(key):
+            exact = self._get_issue(key, fields)
+            if exact:
+                issues = [exact] + [i for i in issues if i.get("key") != exact.get("key")]
+        return issues[:limit + 1]
+
+    def _get_issue(self, issue_key, fields):
+        try:
+            return self.client.request(f"/rest/api/3/issue/{urllib.parse.quote(issue_key, safe='')}",
+                                       params={"fields": ",".join(fields)})
+        except RuntimeError:
+            return None  # unknown key or no permission: the text search results still apply
 
     def find_issues_with_worklogs_today(self, account_id, day):
         jql = f'worklogAuthor = "{account_id}" AND worklogDate = "{day:%Y/%m/%d}"'

@@ -1,6 +1,7 @@
 import logging
 from jira.tasks.run_today_worklogs_task import RunTodayWorklogsTask
 from jira.tasks.run_list_assigned_task import RunListAssignedTask
+from jira.tasks.run_search_issues_task import RunSearchIssuesTask
 from util.common import json_response
 
 logger=logging.getLogger(__name__)
@@ -102,6 +103,8 @@ def handle_async_task(event):
         RunTodayWorklogsTask(event).run_today_worklogs_task()
     elif task=="list_assigned_issues":
         RunListAssignedTask(event).run_list_assigned_task()
+    elif task=="search_issues":
+        RunSearchIssuesTask(event).run()
     else:
         return json_response(400,{"error":"unknown task"})
     return json_response(200,{"ok":True})

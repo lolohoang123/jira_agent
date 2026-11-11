@@ -7,6 +7,7 @@ from urllib.parse import parse_qs
 from handlers.slack_action_handler import handle_block_actions, handle_view_submission
 from jira.authentication_jira import AuthenticationJira
 from util.common import json_response
+from jira.jira_service import MAX_KEYWORD_LENGTH, jql_text_terms
 from util.config import AGENT_DISABLED_MESSAGE, agent_enabled, get_secret
 from util.rate_limit import agent_limit_message, agent_request_allowed
 from util.dynamo_helper import DynamoHelper
@@ -17,6 +18,42 @@ logger = logging.getLogger(__name__)
 def _valid_response_url(response_url):
     parsed = urllib.parse.urlparse(response_url or "")
     return parsed.scheme == "https" and parsed.hostname in {"hooks.slack.com", "hooks.slack-gov.com"}
+
+
+SEARCH_PREFIXES = ("logwork find", "find")
+SEARCH_USAGE = ("Usage: `/jira-agent logwork find <keyword>`, for example `/jira-agent logwork find login bug` "
+                "or `/jira-agent logwork find PROJ-123`.")
+_QUOTES = "\"'“”‘’"
+
+
+def parse_search_command(text):
+    """Keyword for ``logwork find <keyword>`` / ``find <keyword>``; "" if the keyword is missing; None otherwise."""
+    lowered = text.lower()
+    for prefix in SEARCH_PREFIXES:
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            return text[len(prefix):].strip().strip(_QUOTES).strip()
+    return None
+
+
+def _start_search(keyword, slack_user_id, response_url, context, lambda_client):
+    """/jira-agent logwork find <keyword>: validate, check the connection, search asynchronously."""
+    if not jql_text_terms(keyword):
+        return json_response(200, {"response_type": "ephemeral", "text": SEARCH_USAGE})
+    try:
+        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
+    except Exception:
+        return json_response(200, {"response_type": "ephemeral",
+                                   "text": "Your Jira account is not connected. Run `/jira-agent connect` first."})
+    task = {
+        "_async_task": "search_issues",
+        "_task_secret": get_secret("ASYNC_TASK_SECRET"),
+        "slack_user_id": slack_user_id,
+        "keyword": keyword[:MAX_KEYWORD_LENGTH],
+        "response_url": response_url,
+    }
+    lambda_client.invoke(FunctionName=context.function_name, InvocationType="Event",
+                         Payload=json.dumps(task).encode())
+    return json_response(200, {"response_type": "ephemeral", "text": "Searching Jira tickets..."})
 
 
 def _disconnect(slack_user_id):
@@ -62,6 +99,10 @@ def handle_slack_request(event, context, raw_body, lambda_client):
         return AuthenticationJira({}).build_connect_response(slack_user_id)
     if normalized == "disconnect":
         return _disconnect(slack_user_id)
+
+    keyword = parse_search_command(text)
+    if keyword is not None:
+        return _start_search(keyword, slack_user_id, response_url, context, lambda_client)
 
     supported = {"logwork today", "list"}
     if normalized not in supported:

@@ -59,8 +59,9 @@ def agent_enabled():
 
 AGENT_DISABLED_MESSAGE = (
     "The natural-language assistant is temporarily disabled. Available commands: "
-    "`/jira-agent list`, `/jira-agent logwork today`, `/jira-agent connect`, `/jira-agent disconnect`. "
-    "To log time, use the *Log Time* button in `/jira-agent list` or `/jira-agent logwork today`."
+    "`/jira-agent list`, `/jira-agent logwork today`, `/jira-agent logwork find <keyword>`, "
+    "`/jira-agent connect`, `/jira-agent disconnect`. "
+    "To log time, use the *Log Time* button in `list`, `logwork today` or `logwork find` results."
 )
 
 
