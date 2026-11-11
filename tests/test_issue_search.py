@@ -3,6 +3,7 @@
 """
 import json
 import logging
+import re
 import urllib.parse
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,7 @@ import pytest
 from handlers.async_task_handler import handle_async_task
 from handlers.slack_command_handler import SEARCH_USAGE, handle_slack_request, parse_search_command
 from jira import jira_service as service_module
-from jira.jira_service import JiraService, jql_text_terms
+from jira.jira_service import JiraService, jql_like_clause, jql_text_terms
 from jira.tasks.run_search_issues_task import RunSearchIssuesTask
 from slack.message_builder import build_assigned_issue_blocks, build_search_result_blocks
 
@@ -153,6 +154,40 @@ def test_tc08_terms_never_contain_jql_delimiters():
     assert terms == "x"
 
 
+@pytest.mark.parametrize("keyword,clause", [
+    # LIKE-style: every word is a prefix match, all words are required
+    ("logi", 'text ~ "logi*"'),
+    ("logi bu", 'text ~ "logi*" AND text ~ "bu*"'),
+    ("Sửa lỗi", 'text ~ "Sửa*" AND text ~ "lỗi*"'),
+    ("PROJ-12", 'text ~ "PROJ*" AND text ~ "12*"'),
+    # one-character words are matched exactly (a lone x* would match almost everything)
+    ("a b login", 'text ~ "a" AND text ~ "b" AND text ~ "login*"'),
+    # at most five words
+    ("one two three four five six", 'text ~ "one*" AND text ~ "two*" AND text ~ "three*" AND text ~ "four*" '
+                                    'AND text ~ "five*"'),
+    # user wildcards and operators are removed before our own * is added
+    ("log* OR project = X", 'text ~ "log*" AND text ~ "OR*" AND text ~ "project*" AND text ~ "X"'),
+    ('" OR 1=1 --', 'text ~ "OR*" AND text ~ "1" AND text ~ "1"'),
+    ("(*)", ""),
+    ("", ""),
+])
+def test_like_clause(keyword, clause):
+    # Act & Assert
+    assert jql_like_clause(keyword) == clause
+
+
+def test_like_clause_cannot_break_out_of_the_string():
+    # Arrange: everything that could close the string or add JQL
+    hostile = 'x" OR project = SECRET OR summary ~ "y'
+
+    # Act
+    clause = jql_like_clause(hostile)
+
+    # Assert: only text ~ "<word>[*]" clauses joined by AND, each quoted value free of quotes/operators
+    parts = clause.split(" AND ")
+    assert all(re.fullmatch(r'text ~ "[^"\\=()~]+\*?"', part) for part in parts), clause
+
+
 @pytest.fixture
 def jira():
     with patch.object(service_module, "JiraClient") as client_cls:
@@ -168,7 +203,7 @@ def test_tc09_text_search_request(jira):
     # Assert
     assert [i["key"] for i in issues] == ["PROJ-1", "PROJ-2"]
     jira.request.assert_called_once_with("/rest/api/3/search/jql", method="POST", data={
-        "jql": 'text ~ "login bug" ORDER BY updated DESC',
+        "jql": 'text ~ "login*" AND text ~ "bug*" ORDER BY updated DESC',
         "fields": ["summary", "status", "timespent"], "maxResults": 21})
 
 

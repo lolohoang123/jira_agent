@@ -338,7 +338,10 @@ worklogs filtered to the user and to today in `JIRA_TIMEZONE` (at most 23 shown;
 `logwork find <keyword>` (alias `find <keyword>`) follows the same path with task `search_issues`:
 - the keyword is reduced to plain terms (`jql_text_terms`: quotes, backslashes and JQL/Lucene operators removed,
   100 characters max), so user text can never change the JQL structure; an empty result gets a usage hint;
-- one search `text ~ "<terms>" ORDER BY updated DESC` with `maxResults` 21 (20 shown, the 21st only signals
+- LIKE-style matching (`jql_like_clause`): each word (at most 5) becomes a prefix match and all are required,
+  `logi bu` → `text ~ "logi*" AND text ~ "bu*"`; one-character words are matched exactly. JQL has no SQL LIKE and
+  Jira only allows a trailing wildcard, so "gin" cannot match "login";
+- one search `<clause> ORDER BY updated DESC` with `maxResults` 21 (20 shown, the 21st only signals
   "more than 20 match"); if the keyword is an issue key it is also fetched directly and listed first;
 - each row shows the link, status, total logged time (`timespent`) and a **Log Time** button that opens the
   existing modal, so the worklog still goes through the approval flow (4.3, 4.4).

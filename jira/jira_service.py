@@ -15,10 +15,26 @@ MAX_KEYWORD_LENGTH = 100
 _JQL_SPECIAL = re.compile(r"""["'\\+\-&|!(){}\[\]^~*?:/;,<>=]""")
 
 
+MAX_SEARCH_TERMS = 5
+
+
 def jql_text_terms(keyword):
     """Turn free user text into safe terms for ``text ~ "<terms>"`` (never JQL syntax)."""
     cleaned = _JQL_SPECIAL.sub(" ", str(keyword or ""))[:MAX_KEYWORD_LENGTH]
     return " ".join(cleaned.split())
+
+
+def jql_like_clause(keyword):
+    """LIKE-style JQL for a keyword: every word must match the start of a word in the issue text.
+
+    ``login bu`` -> ``text ~ "login*" AND text ~ "bu*"``: prefix matching per word, all words required.
+    JQL has no SQL LIKE; Jira only supports a trailing wildcard, so a match inside a word ("gin" in
+    "login") is not possible. One-character words are matched exactly (a lone ``x*`` matches too much).
+    Wildcards are added here, after user text was reduced by ``jql_text_terms`` (which removes ``*``).
+    Returns "" when the keyword has no usable term.
+    """
+    words = jql_text_terms(keyword).split()[:MAX_SEARCH_TERMS]
+    return " AND ".join(f'text ~ "{word}*"' if len(word) > 1 else f'text ~ "{word}"' for word in words)
 
 
 class JiraService:
@@ -53,16 +69,17 @@ class JiraService:
         return self._search(f'assignee = "{account_id}" ORDER BY updated DESC', ["summary", "status", "timespent"])
 
     def search_issues(self, keyword, limit=SEARCH_LIMIT):
-        """Issues the user can see that match ``keyword``, most recently updated first.
+        """Issues the user can see that match ``keyword`` LIKE-style (see ``jql_like_clause``),
+        most recently updated first.
 
         Returns up to ``limit + 1`` issues so callers can tell whether more exist. An exact issue key
         (e.g. PROJ-12) is fetched directly and listed first, because JQL text search ignores keys.
         """
-        terms = jql_text_terms(keyword)
-        if not terms:
+        clause = jql_like_clause(keyword)
+        if not clause:
             raise ValueError("Search keyword is empty.")
         fields = ["summary", "status", "timespent"]
-        issues = self._search(f'text ~ "{terms}" ORDER BY updated DESC', fields,
+        issues = self._search(f"{clause} ORDER BY updated DESC", fields,
                               max_pages=1, page_size=limit + 1)
         key = keyword.strip().upper()
         if ISSUE_KEY_RE.fullmatch(key):
