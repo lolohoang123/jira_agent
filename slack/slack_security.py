@@ -1,8 +1,9 @@
 import base64
 import hashlib
 import hmac
-import os
 import time
+
+from util.config import get_secret
 
 
 def get_raw_body(event):
@@ -11,7 +12,7 @@ def get_raw_body(event):
 
 
 def verify_slack_signature(event, raw_body):
-    secret = os.environ["SLACK_SIGNING_SECRET"]
+    secret = get_secret("SLACK_SIGNING_SECRET")
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     timestamp, signature = headers.get("x-slack-request-timestamp", ""), headers.get("x-slack-signature", "")
     if not timestamp or not signature:

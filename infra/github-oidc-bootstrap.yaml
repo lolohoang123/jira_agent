@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One-time bootstrap for jira-agent CI/CD: GitHub Actions OIDC provider, one deploy role per GitHub
+  environment (staging, prod), and the permissions boundary every role created by the app stack must carry.
+  Deploy once per AWS account (region ap-southeast-1) with an administrator MFA session.
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: lolohoang123/jira_agent
+    Description: owner/repo allowed to assume the deploy roles.
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set to false if token.actions.githubusercontent.com already exists in this account.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # The most the Lambda function role may ever do. The deploy roles can only create roles that carry it,
+  # so a compromised workflow cannot mint an administrator role.
+  FunctionPermissionsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: jira-agent-function-boundary
+      Description: Upper bound for jira-agent Lambda execution roles.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Logs
+            Effect: Allow
+            Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/jira-agent-*
+          - Sid: Tables
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:DescribeTable
+              - dynamodb:ConditionCheckItem
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/jira-agent-*
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/jira-agent-*/index/*
+          - Sid: Secrets
+            Effect: Allow
+            Action: [ssm:GetParameters, ssm:GetParameter]
+            Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/jira-agent/*
+          - Sid: DecryptSecrets
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+          - Sid: SelfInvoke
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-*
+          - Sid: Bedrock
+            Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource:
+              - arn:aws:bedrock:*::foundation-model/*
+              - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*
+          - Sid: FailureQueue
+            Effect: Allow
+            Action: [sqs:SendMessage, sqs:GetQueueAttributes]
+            Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:jira-agent-*
+
+  StagingDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jira-agent-github-deploy-staging
+      Description: Assumed by GitHub Actions (environment "staging") to deploy the jira-agent-staging stack.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:staging
+      ManagedPolicyArns: [!Ref StagingDeployPolicy]
+
+  ProdDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jira-agent-github-deploy-prod
+      Description: Assumed by GitHub Actions (environment "prod", required reviewers) to deploy jira-agent-prod.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:prod
+      ManagedPolicyArns: [!Ref ProdDeployPolicy]
+
+  StagingDeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: jira-agent-deploy-staging
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFormationStacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:ListStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+            Resource:
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/jira-agent-staging/*
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
+              - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+          - Sid: CloudFormationRead
+            Effect: Allow
+            Action: [cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary, cloudformation:ListStacks]
+            Resource: "*"
+          - Sid: SamArtifactsBucket
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetBucketPolicy
+              - s3:PutBucketPolicy
+              - s3:PutBucketVersioning
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketTagging
+              - s3:GetBucketTagging
+            Resource:
+              - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*
+              - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/*
+          - Sid: Function
+            Effect: Allow
+            Action: lambda:*
+            Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-staging*
+          - Sid: HttpApi
+            Effect: Allow
+            Action: [apigateway:GET, apigateway:POST, apigateway:PUT, apigateway:PATCH, apigateway:DELETE,
+                     apigateway:TagResource, apigateway:UntagResource]
+            Resource:
+              - !Sub arn:aws:apigateway:${AWS::Region}::/apis
+              - !Sub arn:aws:apigateway:${AWS::Region}::/apis/*
+              - !Sub arn:aws:apigateway:${AWS::Region}::/tags/*
+          - Sid: Tables
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:UpdateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateContinuousBackups
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:ListTagsOfResource
+            Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/jira-agent-staging-*
+          - Sid: Queue
+            Effect: Allow
+            Action: [sqs:CreateQueue, sqs:DeleteQueue, sqs:GetQueueAttributes, sqs:SetQueueAttributes,
+                     sqs:GetQueueUrl, sqs:TagQueue, sqs:UntagQueue, sqs:ListQueueTags]
+            Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:jira-agent-staging-*
+          - Sid: Topic
+            Effect: Allow
+            Action: [sns:CreateTopic, sns:DeleteTopic, sns:GetTopicAttributes, sns:SetTopicAttributes,
+                     sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes,
+                     sns:TagResource, sns:UntagResource, sns:ListTagsForResource]
+            Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:jira-agent-staging-*
+          - Sid: Alarms
+            Effect: Allow
+            Action: [cloudwatch:PutMetricAlarm, cloudwatch:DeleteAlarms, cloudwatch:DescribeAlarms,
+                     cloudwatch:TagResource, cloudwatch:UntagResource, cloudwatch:ListTagsForResource]
+            Resource: !Sub arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:jira-agent-staging-*
+          - Sid: LogGroup
+            Effect: Allow
+            Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy,
+                     logs:TagResource, logs:UntagResource, logs:ListTagsForResource, logs:TagLogGroup]
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/jira-agent-staging*
+          - Sid: LogGroupRead
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: "*"
+          - Sid: FunctionRoleWithBoundaryOnly
+            Effect: Allow
+            Action: [iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy,
+                     iam:DeleteRolePolicy, iam:PutRolePermissionsBoundary]
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-staging-*
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: !Ref FunctionPermissionsBoundary
+          - Sid: FunctionRoleManage
+            Effect: Allow
+            Action: [iam:GetRole, iam:GetRolePolicy, iam:DeleteRole, iam:TagRole, iam:UntagRole,
+                     iam:UpdateAssumeRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies]
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-staging-*
+          - Sid: PassFunctionRoleToLambdaOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-staging-*
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: NeverRemoveTheBoundary
+            Effect: Deny
+            Action: [iam:DeleteRolePermissionsBoundary]
+            Resource: "*"
+
+  ProdDeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: jira-agent-deploy-prod
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFormationStacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:ListStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+            Resource:
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/jira-agent-prod/*
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
+              - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+          - Sid: CloudFormationRead
+            Effect: Allow
+            Action: [cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary, cloudformation:ListStacks]
+            Resource: "*"
+          - Sid: SamArtifactsBucket
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetBucketPolicy
+              - s3:PutBucketPolicy
+              - s3:PutBucketVersioning
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketTagging
+              - s3:GetBucketTagging
+            Resource:
+              - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*
+              - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/*
+          - Sid: Function
+            Effect: Allow
+            Action: lambda:*
+            Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-prod*
+          - Sid: HttpApi
+            Effect: Allow
+            Action: [apigateway:GET, apigateway:POST, apigateway:PUT, apigateway:PATCH, apigateway:DELETE,
+                     apigateway:TagResource, apigateway:UntagResource]
+            Resource:
+              - !Sub arn:aws:apigateway:${AWS::Region}::/apis
+              - !Sub arn:aws:apigateway:${AWS::Region}::/apis/*
+              - !Sub arn:aws:apigateway:${AWS::Region}::/tags/*
+          - Sid: Tables
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:UpdateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateContinuousBackups
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:ListTagsOfResource
+            Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/jira-agent-prod-*
+          - Sid: Queue
+            Effect: Allow
+            Action: [sqs:CreateQueue, sqs:DeleteQueue, sqs:GetQueueAttributes, sqs:SetQueueAttributes,
+                     sqs:GetQueueUrl, sqs:TagQueue, sqs:UntagQueue, sqs:ListQueueTags]
+            Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:jira-agent-prod-*
+          - Sid: Topic
+            Effect: Allow
+            Action: [sns:CreateTopic, sns:DeleteTopic, sns:GetTopicAttributes, sns:SetTopicAttributes,
+                     sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes,
+                     sns:TagResource, sns:UntagResource, sns:ListTagsForResource]
+            Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:jira-agent-prod-*
+          - Sid: Alarms
+            Effect: Allow
+            Action: [cloudwatch:PutMetricAlarm, cloudwatch:DeleteAlarms, cloudwatch:DescribeAlarms,
+                     cloudwatch:TagResource, cloudwatch:UntagResource, cloudwatch:ListTagsForResource]
+            Resource: !Sub arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:jira-agent-prod-*
+          - Sid: LogGroup
+            Effect: Allow
+            Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy,
+                     logs:TagResource, logs:UntagResource, logs:ListTagsForResource, logs:TagLogGroup]
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/jira-agent-prod*
+          - Sid: LogGroupRead
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: "*"
+          - Sid: FunctionRoleWithBoundaryOnly
+            Effect: Allow
+            Action: [iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy,
+                     iam:DeleteRolePolicy, iam:PutRolePermissionsBoundary]
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-prod-*
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: !Ref FunctionPermissionsBoundary
+          - Sid: FunctionRoleManage
+            Effect: Allow
+            Action: [iam:GetRole, iam:GetRolePolicy, iam:DeleteRole, iam:TagRole, iam:UntagRole,
+                     iam:UpdateAssumeRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies]
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-prod-*
+          - Sid: PassFunctionRoleToLambdaOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/jira-agent-prod-*
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: NeverRemoveTheBoundary
+            Effect: Deny
+            Action: [iam:DeleteRolePermissionsBoundary]
+            Resource: "*"
+
+Outputs:
+  StagingDeployRoleArn:
+    Description: GitHub environment "staging" -> secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt StagingDeployRole.Arn
+  ProdDeployRoleArn:
+    Description: GitHub environment "prod" -> secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt ProdDeployRole.Arn
+  FunctionPermissionsBoundaryArn:
+    Description: Passed to the app stack as PermissionsBoundaryArn
+    Value: !Ref FunctionPermissionsBoundary

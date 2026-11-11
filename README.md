@@ -2,11 +2,13 @@
 
 ## Current features
 - `/jira-agent connect`: Atlassian OAuth 2.0 (3LO); the connection is stored per `slack_user_id`.
+- `/jira-agent disconnect`: deletes the user's Jira connection and stored tokens. Tokens are also deleted automatically when Atlassian rejects the refresh token (`invalid_grant`).
 - `/jira-agent list`: tickets assigned to the Jira account linked to the Slack user, total worklog time per ticket, and a Log Time button.
 - `/jira-agent logwork today`: worklogs for the current day in the configured timezone, with total time and a Log Time button.
 - Log Time modal: validates the form and creates an approval request; nothing is written to Jira yet.
-- Approval: stores a PENDING record in DynamoDB and Slack sends Approve/Reject buttons; only the Slack user who created the request can approve or reject it. Approve uses a conditional update PENDING → EXECUTING to prevent repeated clicks, and only then creates the worklog.
+- Approval: stores a PENDING record in DynamoDB and the bot sends the Approve/Reject buttons as a **private DM** to the requester (`APPROVAL_DELIVERY=dm`, default; `channel` posts in the channel instead); only the Slack user who created the request can approve or reject it. Approve uses a conditional update PENDING → EXECUTING to prevent repeated clicks, and only then creates the worklog.
 - Bedrock Agent: uses the Converse API to turn natural-language commands into a JSON plan; the backend only executes intents on the allow-list. Natural-language requests run asynchronously so Slack gets an ACK within the time limit.
+- Natural-language requests are rate-limited per user (`AGENT_RATE_LIMIT_PER_HOUR`, default 20) to cap Bedrock cost.
 - Access token refresh, storing the new refresh token; expiry is stored as Unix seconds, with backward-compatible reads of old records stored in milliseconds.
 
 ## Structure
@@ -22,18 +24,23 @@ slack/                               # Slack API, security, modal, message block
 approval/                            # Approval boundary scaffold
 util/                                # DynamoDB, constants, common helpers
 tests/
-template.yaml                       # (optional) AWS SAM template, see the AWS Infrastructure section
+template.yaml                       # AWS SAM template (staging / prod stacks)
+samconfig.toml                      # sam deploy --config-env staging|prod
+.github/workflows/                  # CI (tests, guardrails, cfn-lint) and deploy (OIDC, staging auto, prod manual)
+docs/deploy/RELEASE_CHECKLIST.md    # SSM secrets, Atlassian/Slack app setup, smoke test, retention, rollback
 ```
 
 ## Deploy
-1. Set the Lambda handler to `functions.read_jira_lambda.lambda_handler`.
-2. Upload the whole source tree (or a ZIP) together with `requirements.txt` / a dependency layer that includes `boto3`.
-3. Configure the variables from `.env.example` on the Lambda function.
-4. Create the DynamoDB tables: `OAUTH_STATES_TABLE` with string partition key `state`; `OAUTH_USERS_TABLE` with string partition key `slack_user_id`; `APPROVALS_TABLE` with string partition key `approval_id`. Enable DynamoDB TTL on the `ttl` attribute of the approvals table and on the `expiresAt` attribute of the OAuth states table.
-5. Point the Slack Slash Command Request URL and Interactivity Request URL at the API Gateway endpoint integrated with the Lambda; the Atlassian OAuth redirect URI must exactly match the API Gateway URL plus `/oauth/callback`.
-6. The Lambda execution role needs DynamoDB permissions on the tables, `lambda:InvokeFunction` on the function itself, and `bedrock:InvokeModel` for the chosen model/inference profile.
-7. Add `BEDROCK_MODEL_ID` and `BEDROCK_REGION` for the chosen model. See `docs/BEDROCK_SETUP.md` for detailed setup.
-8. The Slack app needs `commands`, `chat:write`, `chat:write.public` if needed, and `views:write`; enable Interactivity and use the API Gateway endpoint.
+Infrastructure is defined in `template.yaml` (AWS SAM) and deployed by `.github/workflows/deploy.yml`:
+every push to `main` deploys **staging**; **prod** is deployed manually and requires approval.
+Follow `docs/deploy/RELEASE_CHECKLIST.md` for the one-time setup:
+
+1. Store the four secrets as SecureString parameters under `/jira-agent/<stage>/` in SSM Parameter Store.
+2. Configure GitHub environments (`staging`, `prod`) with an OIDC deploy role and the non-secret variables.
+3. Deploy (`sam build && sam deploy --config-env staging ...`) and note the `ApiUrl` / `OAuthCallbackUrl` outputs.
+4. Atlassian app: callback URL, scopes, and **Distribution → Sharing** so other users can authorize.
+5. Slack app: request URLs, bot scopes, **App Home → Messages Tab** (approvals arrive as DMs).
+6. Run the smoke test in the checklist.
 
 ## AWS Infrastructure
 
@@ -86,8 +93,13 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 | `MAX_WORKLOG_MINUTES` | Optional, default `1440` (24h). Largest duration a single worklog may have; `1d` = 8h and `1w` = 5d, as in Jira's defaults |
 | `BEDROCK_MODEL_ID` | Model ID or inference profile ID |
 | `BEDROCK_REGION` | Region used to call Bedrock |
+| `SSM_PARAMETER_PREFIX` | e.g. `/jira-agent/prod/`. When set, the four secrets are read from SSM Parameter Store (SecureString) and environment values for them are ignored. Unset for local development and tests |
+| `SECRET_CACHE_SECONDS` | Optional, default `300`. How long secrets are cached before SSM is read again (rotation delay) |
+| `APPROVAL_DELIVERY` | Optional, `dm` (default) or `channel` |
+| `RATE_LIMITS_TABLE` | DynamoDB table for per-user rate limits (PK `limit_key`, TTL `ttl`). Unset = no limit |
+| `AGENT_RATE_LIMIT_PER_HOUR` | Optional, default `20`. `0` disables the limit |
 
-> Production recommendation: keep the Slack signing secret, Atlassian client secret, and other sensitive values in AWS Secrets Manager or SSM Parameter Store (SecureString) instead of plain environment variables, and grant the execution role the matching read permissions.
+> Secrets (`SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `ATLASSIAN_CLIENT_SECRET`, `ASYNC_TASK_SECRET`) are read only through `util/config.get_secret`: from SSM Parameter Store in AWS (`/jira-agent/<stage>/slack-signing-secret`, ...), from the environment locally. Guardrail G9 fails the build if code reads them from `os.environ`.
 
 ### IAM – Lambda execution role (least privilege)
 Replace the placeholders `<REGION>`, `<ACCOUNT_ID>`, `<FUNCTION_NAME>`, and `<MODEL_ARN_OR_PROFILE_ARN>`:
@@ -129,79 +141,11 @@ Replace the placeholders `<REGION>`, `<ACCOUNT_ID>`, `<FUNCTION_NAME>`, and `<MO
 ```
 If you use a cross-region inference profile, allow both the profile ARN and the foundation models the profile routes to. If the code uses `Query`/`Scan` or a GSI, add the corresponding actions.
 
-### AWS SAM template example
-A minimal example; adjust as needed (`template.yaml` at the project root):
-
-```yaml
-AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::Serverless-2016-10-31
-
-Parameters:
-  BedrockModelId: { Type: String }
-  BedrockRegion:  { Type: String, Default: ap-southeast-1 }
-
-Resources:
-  OAuthStatesTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{ AttributeName: state, AttributeType: S }]
-      KeySchema: [{ AttributeName: state, KeyType: HASH }]
-      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
-
-  OAuthUsersTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{ AttributeName: slack_user_id, AttributeType: S }]
-      KeySchema: [{ AttributeName: slack_user_id, KeyType: HASH }]
-
-  ApprovalsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{ AttributeName: approval_id, AttributeType: S }]
-      KeySchema: [{ AttributeName: approval_id, KeyType: HASH }]
-      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
-
-  JiraAgentFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: functions.read_jira_lambda.lambda_handler
-      Runtime: python3.12
-      CodeUri: .
-      MemorySize: 512
-      Timeout: 60
-      Environment:
-        Variables:
-          OAUTH_STATES_TABLE: !Ref OAuthStatesTable
-          OAUTH_USERS_TABLE: !Ref OAuthUsersTable
-          APPROVALS_TABLE: !Ref ApprovalsTable
-          BEDROCK_MODEL_ID: !Ref BedrockModelId
-          BEDROCK_REGION: !Ref BedrockRegion
-          # Add the remaining variables from .env.example
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref OAuthStatesTable }
-        - DynamoDBCrudPolicy: { TableName: !Ref OAuthUsersTable }
-        - DynamoDBCrudPolicy: { TableName: !Ref ApprovalsTable }
-        - LambdaInvokePolicy: { FunctionName: !Ref JiraAgentFunction }
-        - Statement:
-            - Effect: Allow
-              Action: bedrock:InvokeModel
-              Resource: "*"   # Narrow to the model/profile ARN for production
-      Events:
-        Slack:
-          Type: HttpApi
-          Properties: { Path: /, Method: POST }
-        OAuthCallback:
-          Type: HttpApi
-          Properties: { Path: /oauth/callback, Method: GET }
-
-Outputs:
-  ApiUrl:
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-```
-> `LambdaInvokePolicy` pointing at the function itself can create a circular dependency in CloudFormation. If you hit that error, give the function a fixed name and build the ARN with `!Sub` in a separate statement.
+### AWS SAM template
+`template.yaml` creates the function (reserved concurrency, async retries disabled with an encrypted SQS
+failure queue), the HTTP API (throttling), the four DynamoDB tables (TTL, encryption, point-in-time recovery,
+`Retain`), the log group, and alarms on errors, throttles, duration and failed async tasks.
+Its invariants are pinned by `tests/test_infrastructure.py`; CI also runs `cfn-lint`.
 
 ### Post-deployment checklist
 1. Take the API URL from the stack output and enter it as the Slack Slash Command Request URL and Interactivity Request URL.

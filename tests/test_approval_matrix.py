@@ -322,7 +322,7 @@ def test_tc20_request_creates_pending_and_posts_buttons(fake_repo, slack_api):
          "jira_cloud_id": "cloud-test"})
     method, payload = slack_api.call_args.args
     assert method == "chat.postMessage"
-    assert payload["channel"] == "C1"
+    assert payload["channel"] == OWNER  # default APPROVAL_DELIVERY=dm: private to the requester
     assert payload["text"] == "Approval required: log 1h 30m to PROJ-1"
     actions = payload["blocks"][1]
     assert actions["block_id"] == f"approval_{APPROVAL_ID}"

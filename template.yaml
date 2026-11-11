@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  jira-agent Slack bot (Slack + Atlassian OAuth 3LO + Bedrock). One stack per stage (staging, prod).
+  Secrets live in SSM Parameter Store under /jira-agent/<stage>/ and are never part of this template.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [staging, prod]
+  Runtime:
+    Type: String
+    Default: python3.12
+    Description: Lambda runtime (CLAUDE.md targets python3.12).
+  AtlassianClientId:
+    Type: String
+    Description: Atlassian OAuth 2.0 (3LO) client id (not secret). The client secret is in SSM.
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model id or inference profile id that supports the Converse API.
+  BedrockRegion:
+    Type: String
+    Default: ap-southeast-1
+  JiraTimezone:
+    Type: String
+    Default: Asia/Ho_Chi_Minh
+  JiraBaseUrl:
+    Type: String
+    Default: ""
+    Description: Optional. Preferred Jira site when a user can access several sites.
+  ApprovalDelivery:
+    Type: String
+    Default: dm
+    AllowedValues: [dm, channel]
+    Description: Send approval requests as a private DM (default) or post them in the channel.
+  ApprovalRetentionDays:
+    Type: Number
+    Default: 90
+  AgentRateLimitPerHour:
+    Type: Number
+    Default: 20
+    Description: Natural-language (Bedrock) requests per Slack user per hour. 0 disables the limit.
+  ReservedConcurrency:
+    Type: Number
+    Default: 20
+    Description: Hard cap on concurrent executions (cost and blast-radius limit).
+  ApiThrottleRate:
+    Type: Number
+    Default: 20
+  ApiThrottleBurst:
+    Type: Number
+    Default: 50
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional e-mail subscribed to the alarm topic.
+  SsmKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: Optional customer-managed KMS key used for the SecureString parameters (aws/ssm needs nothing).
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  HasSsmKmsKey: !Not [!Equals [!Ref SsmKmsKeyArn, ""]]
+  IsProd: !Equals [!Ref Stage, prod]
+
+Resources:
+  # ------------------------------------------------------------------ data
+  OAuthStatesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub jira-agent-${Stage}-oauth-states
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: state, AttributeType: S }]
+      KeySchema: [{ AttributeName: state, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  OAuthUsersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub jira-agent-${Stage}-users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: slack_user_id, AttributeType: S }]
+      KeySchema: [{ AttributeName: slack_user_id, KeyType: HASH }]
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  ApprovalsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub jira-agent-${Stage}-approvals
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: approval_id, AttributeType: S }]
+      KeySchema: [{ AttributeName: approval_id, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  RateLimitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub jira-agent-${Stage}-rate-limits
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: limit_key, AttributeType: S }]
+      KeySchema: [{ AttributeName: limit_key, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  # Failed async invocations (uncaught errors, timeouts). The payload contains the task secret and the
+  # worklog form, so the queue is encrypted, short-lived and only readable by account administrators.
+  AsyncFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub jira-agent-${Stage}-async-failures
+      MessageRetentionPeriod: 345600 # 4 days
+      SqsManagedSseEnabled: true
+
+  # ------------------------------------------------------------------ compute
+  JiraAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/jira-agent-${Stage}
+      RetentionInDays: !Ref LogRetentionDays
+
+  JiraAgentApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ApiThrottleRate
+        ThrottlingBurstLimit: !Ref ApiThrottleBurst
+
+  JiraAgentFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: JiraAgentLogGroup
+    Properties:
+      FunctionName: !Sub jira-agent-${Stage}
+      Handler: functions.read_jira_lambda.lambda_handler
+      Runtime: !Ref Runtime
+      CodeUri: .
+      MemorySize: 512
+      Timeout: 60
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      # Created by infra/github-oidc-bootstrap.yaml. The deploy role may only create roles that carry it.
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/jira-agent-function-boundary
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0 # async tasks are not idempotent; failures go to the queue instead
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt AsyncFailureQueue.Arn
+      Environment:
+        Variables:
+          SSM_PARAMETER_PREFIX: !Sub /jira-agent/${Stage}/
+          ATLASSIAN_CLIENT_ID: !Ref AtlassianClientId
+          ATLASSIAN_REDIRECT_URI: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/oauth/callback
+          OAUTH_STATES_TABLE: !Ref OAuthStatesTable
+          OAUTH_USERS_TABLE: !Ref OAuthUsersTable
+          APPROVALS_TABLE: !Ref ApprovalsTable
+          RATE_LIMITS_TABLE: !Ref RateLimitsTable
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_REGION: !Ref BedrockRegion
+          JIRA_TIMEZONE: !Ref JiraTimezone
+          JIRA_BASE_URL: !Ref JiraBaseUrl
+          APPROVAL_DELIVERY: !Ref ApprovalDelivery
+          APPROVAL_RETENTION_DAYS: !Ref ApprovalRetentionDays
+          AGENT_RATE_LIMIT_PER_HOUR: !Ref AgentRateLimitPerHour
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref OAuthStatesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref OAuthUsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ApprovalsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref RateLimitsTable }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt AsyncFailureQueue.QueueName }
+        - Statement:
+            - Sid: ReadOwnSecrets
+              Effect: Allow
+              Action: ssm:GetParameters
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/jira-agent/${Stage}/*
+            - !If
+              - HasSsmKmsKey
+              - Sid: DecryptOwnSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref SsmKmsKeyArn
+              - !Ref AWS::NoValue
+            - Sid: SelfInvokeForAsyncTasks
+              Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-${Stage}
+                - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-${Stage}:*
+            - Sid: BedrockConverse
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:${BedrockRegion}:${AWS::AccountId}:inference-profile/*
+      Events:
+        Slack:
+          Type: HttpApi
+          Properties: { ApiId: !Ref JiraAgentApi, Path: /, Method: POST }
+        OAuthCallback:
+          Type: HttpApi
+          Properties: { ApiId: !Ref JiraAgentApi, Path: /oauth/callback, Method: GET }
+
+  # ------------------------------------------------------------------ monitoring
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub jira-agent-${Stage}-alarms
+      KmsMasterKeyId: alias/aws/sns
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  FunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub jira-agent-${Stage}-errors
+      AlarmDescription: Lambda errors (uncaught exceptions or timeouts).
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref JiraAgentFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !If [IsProd, 1, 5]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  FunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub jira-agent-${Stage}-throttles
+      AlarmDescription: Reserved concurrency reached; Slack requests are being rejected.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref JiraAgentFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  FunctionDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub jira-agent-${Stage}-slow
+      AlarmDescription: p95 duration close to the 60 s timeout.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions: [{ Name: FunctionName, Value: !Ref JiraAgentFunction }]
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 45000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  AsyncFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub jira-agent-${Stage}-async-failures
+      AlarmDescription: An async task failed without being handled (see the async-failures queue).
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt AsyncFailureQueue.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  ApiUrl:
+    Description: Slack Slash Command and Interactivity request URL.
+    Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/
+  OAuthCallbackUrl:
+    Description: Register exactly this URL as the callback URL of the Atlassian app.
+    Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/oauth/callback
+  SsmParameterPrefix:
+    Description: Create the SecureString parameters under this path before the first request.
+    Value: !Sub /jira-agent/${Stage}/
+  AsyncFailureQueueUrl:
+    Value: !Ref AsyncFailureQueue
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic

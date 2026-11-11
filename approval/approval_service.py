@@ -1,4 +1,5 @@
 import logging
+import os
 import urllib.error
 
 from approval.approval_repository import ApprovalRepository, DuplicateApprovalError  # noqa: F401 (re-export)
@@ -32,10 +33,28 @@ def duplicate_approval_message(form):
             "or was approved in the last 24 hours, so no new request was created.")
 
 
+def approval_delivery_mode():
+    """Where approval requests go: ``dm`` (default, private to the requester) or ``channel``."""
+    mode = os.environ.get("APPROVAL_DELIVERY", "dm").strip().lower()
+    return mode if mode in {"dm", "channel"} else "dm"
+
+
 def undelivered_approval_message(form, channel_id):
+    if approval_delivery_mode() == "dm":
+        return (f"⚠️ I couldn't send you the approval for your worklog ({_worklog_summary(form)}) as a "
+                "direct message. Nothing was logged to Jira. Open the app's Messages tab in Slack "
+                "(or ask your admin to enable it), then try again.")
     return (f"⚠️ I couldn't post the approval for your worklog ({_worklog_summary(form)}) in "
             f"<#{channel_id}>. Nothing was logged to Jira. Invite the bot to that channel, or use "
             "`/jira-agent` in a channel where it is a member, then try again.")
+
+
+def approval_posted_message():
+    if approval_delivery_mode() == "dm":
+        return ("I've sent you the worklog approval request as a direct message. "
+                "Jira will be updated only after you approve it.")
+    return ("Your worklog approval request has been posted in this channel. "
+            "Jira will be updated only after you approve it.")
 
 
 def _delivery_unconfirmed(exc):
@@ -68,8 +87,10 @@ class ApprovalService:
             "form": form,
             "jira_cloud_id": resolve(slack_user_id),
         })
+        # DM by default: the issue, duration and description stay private to the requester.
+        target = slack_user_id if approval_delivery_mode() == "dm" else channel_id
         try:
-            self._post_approval_message(item, channel_id, form)
+            self._post_approval_message(item, target, form)
         except Exception as exc:
             if _delivery_unconfirmed(exc):
                 # Slack may have posted it anyway: keep the approval PENDING (it expires in 24 h) rather than

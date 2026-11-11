@@ -7,6 +7,7 @@ import urllib.error
 import time
 from datetime import datetime, timezone
 
+from util.config import get_secret
 from util.common import json_response, slack_escape
 from util.dynamo_helper import DynamoHelper
 from util.constant import ATLASSIAN_TOKEN_URL, ATLASSIAN_RESOURCES_URL
@@ -45,7 +46,7 @@ class AuthenticationJira:
     def exchange_oauth_code(self, code):
         return self.atlassian_json_request(ATLASSIAN_TOKEN_URL,method="POST",data={
             "grant_type":"authorization_code","client_id":os.environ["ATLASSIAN_CLIENT_ID"],
-            "client_secret":os.environ["ATLASSIAN_CLIENT_SECRET"],"code":code,
+            "client_secret":get_secret("ATLASSIAN_CLIENT_SECRET"),"code":code,
             "redirect_uri":os.environ["ATLASSIAN_REDIRECT_URI"]})
 
     def choose_jira_resource(self, resources):

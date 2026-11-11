@@ -1,13 +1,14 @@
 import json
-import os
 import urllib.parse
 import urllib.request
+
+from util.config import get_secret
 
 
 def slack_api(method, payload):
     req = urllib.request.Request(
         f"https://slack.com/api/{method}", data=json.dumps(payload).encode(),
-        headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}",
+        headers={"Authorization": f"Bearer {get_secret("SLACK_BOT_TOKEN")}",
                  "Content-Type": "application/json; charset=utf-8"}, method="POST")
     with urllib.request.urlopen(req, timeout=8) as response:
         result = json.loads(response.read().decode())

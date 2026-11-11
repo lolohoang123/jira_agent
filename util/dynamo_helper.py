@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import secrets
 import time
@@ -11,8 +12,13 @@ from urllib.error import HTTPError, URLError
 import boto3
 from botocore.exceptions import ClientError
 
+from util.config import get_secret
 from util.constant import ATLASSIAN_AUTHORIZE_URL, ATLASSIAN_TOKEN_URL, OAUTH_SCOPES
 
+logger = logging.getLogger(__name__)
+
+# Atlassian token errors meaning the stored refresh token can never work again.
+REVOKED_GRANT_ERRORS = {"invalid_grant", "unauthorized_client", "access_denied"}
 REFRESH_LOCK_SECONDS = 30
 REFRESH_WAIT_SECONDS = 8
 REFRESH_POLL_INTERVAL = 0.5
@@ -31,6 +37,22 @@ def _dynamodb_resource():
     return boto3.resource("dynamodb", **kwargs)
 
 
+class JiraConnectionRevoked(RuntimeError):
+    """The stored Jira authorization was revoked or expired; the user must run /jira-agent connect."""
+
+    def __init__(self):
+        super().__init__("Your Jira authorization has expired or was revoked. Run `/jira-agent connect` again.")
+
+
+def _token_error_code(exc):
+    """OAuth ``error`` code from an Atlassian error response; never returns or logs anything else."""
+    try:
+        body = json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
+    except (ValueError, OSError, AttributeError):
+        return None
+    return body.get("error") if isinstance(body, dict) else None
+
+
 class DynamoHelper:
     def __init__(self, table_name):
         self.table_name_env = table_name
@@ -44,15 +66,22 @@ class DynamoHelper:
             raise RuntimeError(f"Missing required environment variable: {self.table_name_env}")
         return self.dynamodb.Table(table_name)
 
+    def _read_connection(self, slack_user_id, attribute):
+        """Read one attribute of an active connection; {} when missing or disconnected."""
+        result = self.oauth_table().get_item(
+            Key={"slack_user_id": slack_user_id},
+            ProjectionExpression=f"{attribute}, #connected",
+            ExpressionAttributeNames={"#connected": "connected"},
+            ConsistentRead=True,
+        )
+        item = result.get("Item") or {}
+        return item if item.get("connected", True) else {}
+
     def get_jira_account_id_for_slack_user(self, slack_user_id):
         if not slack_user_id:
             raise ValueError("Could not identify the Slack user.")
-        result = self.oauth_table().get_item(
-            Key={"slack_user_id": slack_user_id},
-            ProjectionExpression="jiraAccountId",
-            ConsistentRead=True,
-        )
-        account_id = (result.get("Item") or {}).get("jiraAccountId")
+        item = self._read_connection(slack_user_id, "jiraAccountId")
+        account_id = item.get("jiraAccountId")
         if not account_id:
             raise ValueError("Jira account is not connected. Run `/jira-agent connect` first.")
         return account_id
@@ -61,12 +90,8 @@ class DynamoHelper:
         """Cloud id of the Jira site this Slack user is connected to (no token refresh)."""
         if not slack_user_id:
             raise ValueError("Could not identify the Slack user.")
-        result = self.oauth_table().get_item(
-            Key={"slack_user_id": slack_user_id},
-            ProjectionExpression="jiraCloudId",
-            ConsistentRead=True,
-        )
-        cloud_id = (result.get("Item") or {}).get("jiraCloudId")
+        item = self._read_connection(slack_user_id, "jiraCloudId")
+        cloud_id = item.get("jiraCloudId")
         if not cloud_id:
             raise ValueError("Jira account is not connected. Run `/jira-agent connect` first.")
         return cloud_id
@@ -131,6 +156,28 @@ class DynamoHelper:
     def _read_user(table, user_id):
         return table.get_item(Key={"slack_user_id": user_id}, ConsistentRead=True).get("Item")
 
+    def disconnect_slack_user(self, slack_user_id):
+        """Delete the user's Jira connection (tokens included). Returns True if one existed."""
+        if not slack_user_id:
+            raise ValueError("Could not identify the Slack user.")
+        result = self.oauth_table().delete_item(Key={"slack_user_id": slack_user_id}, ReturnValues="ALL_OLD")
+        return bool(result.get("Attributes"))
+
+    def _forget_tokens(self, table, slack_user_id, owner):
+        """Atlassian rejected the refresh token for good: drop the tokens, keep the row as disconnected."""
+        now = int(time.time())
+        try:
+            table.update_item(
+                Key={"slack_user_id": slack_user_id},
+                UpdateExpression=("SET connected = :false, disconnectedAt = :now, updatedAt = :now "
+                                  "REMOVE accessToken, refreshToken, accessTokenExpiresAt, accessTokenExpiresAtIso, "
+                                  "refreshLockOwner, refreshLockUntil"),
+                ConditionExpression="refreshLockOwner = :owner",
+                ExpressionAttributeValues={":false": False, ":now": now, ":owner": owner},
+            )
+        except ClientError:
+            logger.warning("Could not clear revoked Jira tokens for Slack user %s", slack_user_id)
+
     def get_oauth_credentials(self, slack_user_id):
         if not slack_user_id:
             raise ValueError("slack_user_id is required")
@@ -186,7 +233,7 @@ class DynamoHelper:
             payload = {
                 "grant_type": "refresh_token",
                 "client_id": os.environ["ATLASSIAN_CLIENT_ID"],
-                "client_secret": os.environ["ATLASSIAN_CLIENT_SECRET"],
+                "client_secret": get_secret("ATLASSIAN_CLIENT_SECRET"),
                 "refresh_token": refresh_token,
             }
             request = Request(ATLASSIAN_TOKEN_URL, data=json.dumps(payload).encode(),
@@ -195,6 +242,9 @@ class DynamoHelper:
                 with urlopen(request, timeout=15) as response:
                     token_data = json.loads(response.read().decode())
             except HTTPError as exc:
+                if _token_error_code(exc) in REVOKED_GRANT_ERRORS:
+                    self._forget_tokens(table, slack_user_id, owner)
+                    raise JiraConnectionRevoked() from None
                 raise RuntimeError(f"Atlassian token refresh failed (HTTP {exc.code}); reconnect Jira if the refresh token expired") from None
             except (URLError, TimeoutError) as exc:
                 raise RuntimeError("Could not reach Atlassian to refresh the Jira token") from exc

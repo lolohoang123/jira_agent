@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from slack.slack_client import slack_api
 from slack.modal_builder import build_log_time_modal, get_modal_form
 from util.common import json_response, validate_duration
+from util.config import get_secret
 
 logger=logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ def handle_block_actions(payload, context=None, lambda_client=None):
     actions = payload.get("actions", [])
     action = next((a for a in actions if a.get("action_id") in {"approve_jira_write", "reject_jira_write"}), None)
     if action:
-        task = {"_async_task": "handle_approval_action", "_task_secret": os.environ["ASYNC_TASK_SECRET"],
+        task = {"_async_task": "handle_approval_action", "_task_secret": get_secret("ASYNC_TASK_SECRET"),
                 "approval_id": action.get("value"), "decision": action.get("action_id"),
                 "slack_user_id": payload.get("user", {}).get("id"),
                 "channel_id": payload.get("channel", {}).get("id"),
@@ -53,7 +54,7 @@ def handle_view_submission(payload, context, lambda_client):
         errors["new_estimate_block"]="Enter a new remaining estimate."
     if errors:
         return json_response(200,{"response_action":"errors","errors":errors})
-    task={"_async_task":"request_worklog_approval","_task_secret":os.environ["ASYNC_TASK_SECRET"],
+    task={"_async_task":"request_worklog_approval","_task_secret":get_secret("ASYNC_TASK_SECRET"),
           "form":form,"user_id":metadata["user_id"],"channel_id":metadata["channel_id"],
           "slack_user_id":metadata["user_id"]}
     lambda_client.invoke(FunctionName=context.function_name,InvocationType="Event",Payload=json.dumps(task).encode())

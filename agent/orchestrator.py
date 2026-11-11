@@ -8,6 +8,7 @@ from agent.instructions import AGENT_INSTRUCTIONS
 from agent.llm_client import BedrockLLMClient
 from agent.schemas import AgentResult
 from agent.tool_registry import execute_plan
+from approval.approval_service import approval_posted_message
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class AgentOrchestrator:
         if intent == "clarify" or intent == "unknown":
             return outcome["message"]
         if intent == "prepare_worklog":
-            return "Your worklog approval request has been posted in this channel. Jira will be updated only after you approve it."
+            return approval_posted_message()
         if intent == "list_assigned_issues":
             issues = outcome.get("data", [])
             if not issues:

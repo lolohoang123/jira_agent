@@ -209,7 +209,7 @@ def test_gap02_cancel_of_non_pending_returns_none(repo, table):
 @pytest.mark.parametrize(
     "error,status,expected_text",
     [
-        (ApprovalDeliveryError("x"), 502, "couldn't post the approval"),
+        (ApprovalDeliveryError("x"), 502, "couldn't send you the approval"),
         (DuplicateApprovalError("abc"), 409, "identical worklog request"),
         (RuntimeError("boom"), 500, "could not be created"),
     ],
@@ -252,7 +252,7 @@ def test_gap02_dm_failure_does_not_raise():
 @pytest.mark.parametrize(
     "error,expected_text",
     [(DuplicateApprovalError("abc"), "identical worklog request"),
-     (ApprovalDeliveryError("x"), "couldn't post the approval")],
+     (ApprovalDeliveryError("x"), "couldn't send you the approval")],
 )
 def test_gap02_agent_path_returns_message_instead_of_failing(error, expected_text):
     # Arrange

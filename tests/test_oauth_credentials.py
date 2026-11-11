@@ -149,7 +149,9 @@ def test_tc05_account_id_for_connected_user(table):
 
     # Assert
     assert account_id == "acc-1"
-    table.get_item.assert_called_once_with(Key={"slack_user_id": "U1"}, ProjectionExpression="jiraAccountId",
+    table.get_item.assert_called_once_with(Key={"slack_user_id": "U1"},
+                                           ProjectionExpression="jiraAccountId, #connected",
+                                           ExpressionAttributeNames={"#connected": "connected"},
                                            ConsistentRead=True)
 
 
@@ -476,9 +478,10 @@ def test_tc27_missing_refresh_token_releases_lock(table, clock, owner, urlopen):
 
 
 @pytest.mark.parametrize("failure,message", [
-    (urllib.error.HTTPError(ATLASSIAN_TOKEN_URL, 400, "Bad Request", {},
-                            io.BytesIO(json.dumps({"error": "invalid_grant", "token": REFRESH}).encode())),
-     "HTTP 400"),
+    # A temporary Atlassian error keeps the tokens (invalid_grant is covered by the revocation tests).
+    (urllib.error.HTTPError(ATLASSIAN_TOKEN_URL, 503, "Service Unavailable", {},
+                            io.BytesIO(json.dumps({"error": "server_error", "token": REFRESH}).encode())),
+     "HTTP 503"),
     (urllib.error.URLError("timed out"), "Could not reach Atlassian"),
     (TimeoutError("read timed out"), "Could not reach Atlassian"),
 ])

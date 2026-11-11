@@ -99,6 +99,10 @@ def test_real_repo_reports_the_unapproved_write_path():
      "def bad(req):\n    return urllib.request.urlopen(req)", "G7"),
     # G8: third-party HTTP client
     ("jira/jira_client.py", "import requests", "G8"),
+    # G9: secret read from the environment instead of SSM
+    ("slack/slack_client.py", "def bad():\n    return os.environ['SLACK_BOT_TOKEN']", "G9"),
+    ("handlers/slack_command_handler.py", "def bad():\n    return os.environ.get('ASYNC_TASK_SECRET')", "G9"),
+    ("jira/authentication_jira.py", "def bad():\n    return os.getenv('ATLASSIAN_CLIENT_SECRET')", "G9"),
 ])
 def test_injected_violation_is_reported(repo, rel, code, rule):
     # Arrange

@@ -1,0 +1,85 @@
+name: Deploy
+
+# staging: every push to main (after CI passes in the same run).
+# prod:    manual "Run workflow" with stage=prod; protect the "prod" GitHub environment with required reviewers.
+#
+# Per GitHub environment ("staging", "prod") configure:
+#   secrets.AWS_DEPLOY_ROLE_ARN  IAM role trusted for GitHub OIDC (no long-lived AWS keys)
+#   vars.AWS_REGION              e.g. ap-southeast-1
+#   vars.ATLASSIAN_CLIENT_ID     Atlassian app client id for that stage (not secret)
+#   vars.BEDROCK_MODEL_ID        Bedrock model or inference profile id
+#   vars.ALARM_EMAIL             optional
+# Secrets (signing secret, bot token, client secret, task secret) are NOT stored in GitHub:
+# they live in SSM Parameter Store under /jira-agent/<stage>/ (see docs/deploy/RELEASE_CHECKLIST.md).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to deploy
+        type: choice
+        options: [staging, prod]
+        default: staging
+
+concurrency:
+  group: deploy-${{ github.event.inputs.stage || 'staging' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.stage || 'staging' }}
+    env:
+      STAGE: ${{ github.event.inputs.stage || 'staging' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Tests and guardrails must pass before deploying
+        run: |
+          pip install -r requirements.txt pytest pyyaml
+          python -m pytest tests -q
+          python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build
+        run: sam build --use-container=false
+
+      - name: Deploy
+        # --parameter-overrides replaces the samconfig.toml list, so every non-default value is passed here.
+        run: |
+          RESERVED=$([ "$STAGE" = "prod" ] && echo 20 || echo 10)
+          sam deploy --config-env "$STAGE" --region "${{ vars.AWS_REGION }}" \
+            --no-confirm-changeset --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "Stage=$STAGE" \
+              "AtlassianClientId=${{ vars.ATLASSIAN_CLIENT_ID }}" \
+              "BedrockModelId=${{ vars.BEDROCK_MODEL_ID }}" \
+              "BedrockRegion=${{ vars.AWS_REGION }}" \
+              "AlarmEmail=${{ vars.ALARM_EMAIL }}" \
+              "ApprovalDelivery=dm" \
+              "AgentRateLimitPerHour=20" \
+              "ReservedConcurrency=$RESERVED"
+
+      - name: Show endpoints
+        run: |
+          aws cloudformation describe-stacks --stack-name "jira-agent-$STAGE" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl' || OutputKey=='OAuthCallbackUrl']" --output table

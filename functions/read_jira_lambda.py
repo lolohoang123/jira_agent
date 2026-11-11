@@ -1,7 +1,6 @@
 import json
 import hmac
 import logging
-import os
 import urllib.parse
 
 import boto3
@@ -11,6 +10,7 @@ from handlers.slack_command_handler import handle_slack_request
 from handlers.async_task_handler import handle_async_task
 from slack.slack_security import get_raw_body, verify_slack_signature
 from util.common import json_response
+from util.config import get_secret
 
 logger=logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -25,7 +25,7 @@ def lambda_handler(event,context):
         return handle_oauth_callback(event)
     #handle all event task by slash command in slack
     if event.get("_async_task"):
-        expected_secret=os.environ.get("ASYNC_TASK_SECRET") or ""
+        expected_secret=get_secret("ASYNC_TASK_SECRET", default="")
         provided_secret=event.get("_task_secret")
         if (not expected_secret or not isinstance(provided_secret,str)
                 or not hmac.compare_digest(provided_secret.encode("utf-8"),expected_secret.encode("utf-8"))):

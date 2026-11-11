@@ -162,7 +162,10 @@ def test_cloud_id_lookup_reads_only_cloud_id():
 
     # Assert
     assert cloud_id == "site-A"
-    users.get_item.assert_called_once_with(Key={"slack_user_id": OWNER}, ProjectionExpression="jiraCloudId",
+    # Reads the cloud id and the connected flag only, never tokens.
+    users.get_item.assert_called_once_with(Key={"slack_user_id": OWNER},
+                                           ProjectionExpression="jiraCloudId, #connected",
+                                           ExpressionAttributeNames={"#connected": "connected"},
                                            ConsistentRead=True)
 
 

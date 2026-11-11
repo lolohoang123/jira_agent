@@ -26,6 +26,8 @@ SENSITIVE_NAME = re.compile(
 LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
 ALLOWED_RUNTIME_DEPS = {"boto3"}
 FORBIDDEN_HTTP_LIBS = {"requests", "httpx", "aiohttp", "urllib3"}
+SECRET_NAMES = {"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "ATLASSIAN_CLIENT_SECRET", "ASYNC_TASK_SECRET"}
+SECRET_LOADER = "util/config.py"
 
 
 @dataclass
@@ -63,6 +65,7 @@ class Checker:
             self.g3_no_sensitive_logging(path, tree)
             self.g6_dynamodb_wire_format(path, tree, src)
             self.g7_http_timeouts(path, tree)
+            self.g9_secrets_from_parameter_store(path, tree)
         self.g4_entry_authentication()
         self.g5_owner_bound_claim()
         self.g8_dependencies()
@@ -209,7 +212,28 @@ class Checker:
                         self.add("G8", "ERROR", path, node.lineno, "Import from a _backup_* snapshot")
 
 
+    def g9_secrets_from_parameter_store(self, path, tree):
+        """Secrets come from SSM Parameter Store via util.config.get_secret, never straight from os.environ."""
+        if path == SECRET_LOADER:
+            return
+        for node in ast.walk(tree):
+            name = None
+            if isinstance(node, ast.Subscript) and _is_environ(node.value)                     and isinstance(node.slice, ast.Constant):
+                name = node.slice.value
+            elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and (
+                    (isinstance(node.func, ast.Attribute) and node.func.attr == "get" and _is_environ(node.func.value))
+                    or _call_name(node) == "getenv"):
+                name = node.args[0].value
+            if name in SECRET_NAMES:
+                self.add("G9", "ERROR", path, node.lineno,
+                         f"`{name}` read from the environment; use util.config.get_secret (SSM Parameter Store)")
+
+
 # ---------------------------------------------------------------------- helpers
+def _is_environ(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr == "environ"
+
+
 def _call_name(node: ast.Call) -> str:
     func = node.func
     if isinstance(func, ast.Name):
@@ -275,7 +299,7 @@ def main() -> int:
         for f in findings:
             print(f"- [{f.level}] {f.rule} {f.path}:{f.line}  {f.message}")
         if not findings:
-            print("- [OK] All guardrails G1-G8 pass.")
+            print("- [OK] All guardrails G1-G9 pass.")
     return 1 if errors else 0
 
 

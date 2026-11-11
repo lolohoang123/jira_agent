@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pyyaml cfn-lint
+
+      - name: Unit tests
+        run: python -m pytest tests -q
+
+      - name: Guardrails (CLAUDE.md non-negotiable rules)
+        run: python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .
+
+      - name: Lint CloudFormation template
+        run: cfn-lint template.yaml

@@ -7,6 +7,8 @@ from urllib.parse import parse_qs
 from handlers.slack_action_handler import handle_block_actions, handle_view_submission
 from jira.authentication_jira import AuthenticationJira
 from util.common import json_response
+from util.config import get_secret
+from util.rate_limit import agent_limit_message, agent_request_allowed
 from util.dynamo_helper import DynamoHelper
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,20 @@ logger = logging.getLogger(__name__)
 def _valid_response_url(response_url):
     parsed = urllib.parse.urlparse(response_url or "")
     return parsed.scheme == "https" and parsed.hostname in {"hooks.slack.com", "hooks.slack-gov.com"}
+
+
+def _disconnect(slack_user_id):
+    """Delete the user's Jira connection and stored tokens (spec gap GAP-04)."""
+    try:
+        removed = DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user(slack_user_id)
+    except Exception:
+        logger.exception("Could not disconnect Jira for Slack user %s", slack_user_id)
+        return json_response(200, {"response_type": "ephemeral",
+                                   "text": "Could not disconnect Jira right now. Please try again."})
+    text = ("Your Jira account has been disconnected and its stored tokens deleted. "
+            "To also revoke access on the Atlassian side, remove the app under your Atlassian account "
+            "settings → Connected apps." if removed else "No Jira account is connected.")
+    return json_response(200, {"response_type": "ephemeral", "text": text})
 
 
 def handle_slack_request(event, context, raw_body, lambda_client):
@@ -44,12 +60,16 @@ def handle_slack_request(event, context, raw_body, lambda_client):
 
     if normalized == "connect":
         return AuthenticationJira({}).build_connect_response(slack_user_id)
+    if normalized == "disconnect":
+        return _disconnect(slack_user_id)
 
     supported = {"logwork today", "list"}
     if normalized not in supported:
+        if not agent_request_allowed(slack_user_id):
+            return json_response(200, {"response_type": "ephemeral", "text": agent_limit_message()})
         task = {
             "_async_task": "agent_request",
-            "_task_secret": os.environ["ASYNC_TASK_SECRET"],
+            "_task_secret": get_secret("ASYNC_TASK_SECRET"),
             "slack_user_id": slack_user_id,
             "channel_id": channel_id,
             "text": text,
@@ -70,7 +90,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
     task_type = "jira_worklog" if normalized == "logwork today" else "list_assigned_issues"
     task = {
         "_async_task": task_type,
-        "_task_secret": os.environ["ASYNC_TASK_SECRET"],
+        "_task_secret": get_secret("ASYNC_TASK_SECRET"),
         "slack_user_id": slack_user_id,
         "account_id": account_id,
         "response_url": response_url,

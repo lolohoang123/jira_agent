@@ -20,12 +20,15 @@ A Slack bot (`/jira-agent`) that lets users connect Jira via Atlassian OAuth 2.0
 - Install: `pip install -r requirements.txt pytest` (runtime dependency is only `boto3`).
 - Tests: `python -m pytest tests` from the repo root (pytest runs both the unittest and pytest-style tests).
 - Config: copy `.env.example` to `.env` for local values; never commit `.env`.
+- Guardrails: `python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .` (also run in CI).
+- Deploy: `template.yaml` (SAM) + `.github/workflows/deploy.yml`; setup steps in `docs/deploy/RELEASE_CHECKLIST.md`.
 
 ## Non-negotiable rules
 - **The model never calls Jira.** Bedrock only returns a JSON plan; `agent/tool_registry.py` validates it and executes only intents in `ALLOWED_INTENTS`. Never dispatch functions by a model-supplied name. Adding a capability means adding an explicit intent plus validation there.
 - **All worklog writes go through `ApprovalService`.** The modal and the agent create a PENDING approval; only the async task `handle_approval_action` may write to Jira, after a conditional `PENDING → EXECUTING` claim. Do not call `create_jira_worklog` directly or add any other write path.
 - Only the Slack user who created an approval may approve/reject it.
 - Never log OAuth tokens, Slack request bodies, or worklog descriptions.
+- Read secrets only via `util/config.get_secret` (SSM Parameter Store in AWS, env vars locally); never `os.environ` for them.
 - Verify Slack signatures (`slack/slack_security.py`) on every Slack request; async self-invocations are authenticated with `ASYNC_TASK_SECRET`.
 - Slack must get an ACK within 3 seconds: slow work (Bedrock, Jira calls) runs via async self-invoke (`util/lambda_invoke.py`).
 

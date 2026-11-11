@@ -1,0 +1,29 @@
+# sam build && sam deploy --config-env staging   (or prod)
+# Values that differ per environment (client id, model id, alarm e-mail) are passed by CI with
+# --parameter-overrides from GitHub environment variables; see .github/workflows/deploy.yml.
+version = 0.1
+
+[default.global.parameters]
+region = "ap-southeast-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[staging.deploy.parameters]
+stack_name = "jira-agent-staging"
+resolve_s3 = true
+s3_prefix = "jira-agent-staging"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+parameter_overrides = "Stage=staging ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=10"
+
+[prod.deploy.parameters]
+stack_name = "jira-agent-prod"
+resolve_s3 = true
+s3_prefix = "jira-agent-prod"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+parameter_overrides = "Stage=prod ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=20"

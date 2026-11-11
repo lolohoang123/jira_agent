@@ -3,7 +3,7 @@ name: jira-agent-guardrails
 description: >-
   Check the jira_agent repo against its CLAUDE.md non-negotiable rules (single approval write path,
   no model-chosen dispatch, no token/description logging, Slack signature + async secret, owner-bound
-  claim, DynamoDB resource wire format, HTTP timeouts, stdlib+boto3 only). Use before committing or after
+  claim, DynamoDB resource wire format, HTTP timeouts, stdlib+boto3 only, secrets via SSM). Use before committing or after
   changing approval/, agent/, handlers/, jira/, slack/ or util/. Triggers: guardrails, rule check,
   ガードレール, 規約チェック, kiểm tra quy tắc.
 ---
