@@ -37,6 +37,7 @@ jobs:
     environment: ${{ github.event.inputs.stage || 'staging' }}
     env:
       STAGE: ${{ github.event.inputs.stage || 'staging' }}
+      SAM_CLI_TELEMETRY: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -61,23 +62,40 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Build
-        run: sam build --use-container=false
+        # Builds with the runner's Python 3.12 (setup-python above), matching the Lambda runtime.
+        run: sam build
 
       - name: Deploy
         # --parameter-overrides replaces the samconfig.toml list, so every non-default value is passed here.
+        # SAM rejects "Key=" with an empty value, so optional values are only added when set.
+        env:
+          AWS_REGION_VAR: ${{ vars.AWS_REGION }}
+          ATLASSIAN_CLIENT_ID: ${{ vars.ATLASSIAN_CLIENT_ID }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
         run: |
+          missing=""
+          for name in AWS_REGION_VAR ATLASSIAN_CLIENT_ID BEDROCK_MODEL_ID; do
+            [ -n "${!name}" ] || missing="$missing ${name%_VAR}"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Set these variables on the '$STAGE' GitHub environment:$missing"
+            exit 1
+          fi
           RESERVED=$([ "$STAGE" = "prod" ] && echo 20 || echo 10)
-          sam deploy --config-env "$STAGE" --region "${{ vars.AWS_REGION }}" \
+          overrides=(
+            "Stage=$STAGE"
+            "AtlassianClientId=$ATLASSIAN_CLIENT_ID"
+            "BedrockModelId=$BEDROCK_MODEL_ID"
+            "BedrockRegion=$AWS_REGION_VAR"
+            "ApprovalDelivery=dm"
+            "AgentRateLimitPerHour=20"
+            "ReservedConcurrency=$RESERVED"
+          )
+          [ -n "$ALARM_EMAIL" ] && overrides+=("AlarmEmail=$ALARM_EMAIL")
+          sam deploy --config-env "$STAGE" --region "$AWS_REGION_VAR" \
             --no-confirm-changeset --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              "Stage=$STAGE" \
-              "AtlassianClientId=${{ vars.ATLASSIAN_CLIENT_ID }}" \
-              "BedrockModelId=${{ vars.BEDROCK_MODEL_ID }}" \
-              "BedrockRegion=${{ vars.AWS_REGION }}" \
-              "AlarmEmail=${{ vars.ALARM_EMAIL }}" \
-              "ApprovalDelivery=dm" \
-              "AgentRateLimitPerHour=20" \
-              "ReservedConcurrency=$RESERVED"
+            --parameter-overrides "${overrides[@]}"
 
       - name: Show endpoints
         run: |
