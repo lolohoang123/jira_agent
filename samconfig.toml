@@ -17,7 +17,7 @@ s3_prefix = "jira-agent-staging"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = false
 fail_on_empty_changeset = false
-parameter_overrides = "Stage=staging ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=10"
+parameter_overrides = "Stage=staging ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=0"
 
 [prod.deploy.parameters]
 stack_name = "jira-agent-prod"
@@ -26,4 +26,4 @@ s3_prefix = "jira-agent-prod"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = false
 fail_on_empty_changeset = false
-parameter_overrides = "Stage=prod ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=20"
+parameter_overrides = "Stage=prod ApprovalDelivery=dm AgentRateLimitPerHour=20 ReservedConcurrency=0"

@@ -73,6 +73,8 @@ jobs:
           ATLASSIAN_CLIENT_ID: ${{ vars.ATLASSIAN_CLIENT_ID }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
           ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+          # 0 (default) = no reserved concurrency; raise only after the account quota allows it.
+          RESERVED_CONCURRENCY: ${{ vars.RESERVED_CONCURRENCY || '0' }}
         run: |
           missing=""
           for name in AWS_REGION_VAR ATLASSIAN_CLIENT_ID BEDROCK_MODEL_ID; do
@@ -82,7 +84,6 @@ jobs:
             echo "::error::Set these variables on the '$STAGE' GitHub environment:$missing"
             exit 1
           fi
-          RESERVED=$([ "$STAGE" = "prod" ] && echo 20 || echo 10)
           overrides=(
             "Stage=$STAGE"
             "AtlassianClientId=$ATLASSIAN_CLIENT_ID"
@@ -90,7 +91,7 @@ jobs:
             "BedrockRegion=$AWS_REGION_VAR"
             "ApprovalDelivery=dm"
             "AgentRateLimitPerHour=20"
-            "ReservedConcurrency=$RESERVED"
+            "ReservedConcurrency=$RESERVED_CONCURRENCY"
           )
           [ -n "$ALARM_EMAIL" ] && overrides+=("AlarmEmail=$ALARM_EMAIL")
           sam deploy --config-env "$STAGE" --region "$AWS_REGION_VAR" \

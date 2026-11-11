@@ -73,7 +73,10 @@ def test_async_retries_are_disabled_and_failures_are_kept(template, function):
 
 def test_cost_and_abuse_caps(template, function):
     # Assert
-    assert function["ReservedConcurrentExecutions"] == {"Ref": "ReservedConcurrency"}
+    # Optional: an account with the default limit (10) cannot reserve any concurrency at all.
+    assert function["ReservedConcurrentExecutions"] == {
+        "If": ["HasReservedConcurrency", {"Ref": "ReservedConcurrency"}, {"Ref": "AWS::NoValue"}]}
+    assert template["Parameters"]["ReservedConcurrency"]["Default"] == 0
     throttle = template["Resources"]["JiraAgentApiStage"]["Properties"]["DefaultRouteSettings"]
     assert set(throttle) == {"ThrottlingRateLimit", "ThrottlingBurstLimit"}
     variables = function["Environment"]["Variables"]

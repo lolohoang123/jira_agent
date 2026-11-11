@@ -42,8 +42,12 @@ Parameters:
     Description: Natural-language (Bedrock) requests per Slack user per hour. 0 disables the limit.
   ReservedConcurrency:
     Type: Number
-    Default: 20
-    Description: Hard cap on concurrent executions (cost and blast-radius limit).
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Hard cap on concurrent executions (cost and blast-radius limit). 0 = no reservation. AWS requires at
+      least 10 unreserved executions per account, so with the new-account limit of 10 this must stay 0 until
+      the "Concurrent executions" quota is raised.
   ApiThrottleRate:
     Type: Number
     Default: 20
@@ -66,6 +70,7 @@ Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
   HasSsmKmsKey: !Not [!Equals [!Ref SsmKmsKeyArn, ""]]
   IsProd: !Equals [!Ref Stage, prod]
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
 
 Resources:
   # ------------------------------------------------------------------ data
@@ -192,7 +197,7 @@ Resources:
       CodeUri: .
       MemorySize: 512
       Timeout: 60
-      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]
       # Created by infra/github-oidc-bootstrap.yaml. The deploy role may only create roles that carry it.
       PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/jira-agent-function-boundary
       EventInvokeConfig:
