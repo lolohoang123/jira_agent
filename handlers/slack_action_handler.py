@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,6 +9,7 @@ from slack.slack_client import slack_api
 from slack.modal_builder import build_log_time_modal, get_modal_form
 from util.common import json_response, validate_duration
 from util.config import get_secret
+from util.timezone import user_timezone_name
 
 logger=logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def handle_block_actions(payload, context=None, lambda_client=None):
         return json_response(200,"")
     user=payload["user"]["id"]
     channel=payload.get("channel",{}).get("id","")
-    tz=ZoneInfo(os.environ.get("JIRA_TIMEZONE","Asia/Ho_Chi_Minh"))
+    tz=ZoneInfo(user_timezone_name(team_id,user))
     today=datetime.now(tz).date().isoformat()
     try:
         slack_api("views.open",{"trigger_id":payload["trigger_id"],"view":build_log_time_modal(user,channel,today,action.get("value",""))},team_id)

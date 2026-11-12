@@ -11,6 +11,8 @@ from util.config import get_secret
 from util.common import json_response, slack_escape
 from util.dynamo_helper import DynamoHelper
 from util.constant import ATLASSIAN_TOKEN_URL, ATLASSIAN_RESOURCES_URL
+from util.timezone import valid_timezone_name
+from slack.slack_client import slack_user_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,11 @@ class AuthenticationJira:
                     "accessTokenExpiresAt":expires,
                     "accessTokenExpiresAtIso":datetime.fromtimestamp(expires,tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "scope":token.get("scope",""),"connected":True,"connectedAt":now,"updatedAt":now}
+            # Jira profile timezone first (JQL worklogDate uses it), Slack profile as fallback; neither -> default.
+            time_zone=(valid_timezone_name(myself.get("timeZone"))
+                       or valid_timezone_name(slack_user_timezone(team_id,slack_user_id)))
+            if time_zone:
+                record["timeZone"]=time_zone
             DynamoHelper("OAUTH_USERS_TABLE").oauth_table().put_item(Item=record)
             logger.info("Stored Jira OAuth connection for Slack user %s",slack_user_id)
             return self.html_response(200,"Jira connected successfully",f"Connected to {site.get('name') or site['url']}. Return to Slack and run `/jira-agent list` or `/jira-agent logwork today`.")

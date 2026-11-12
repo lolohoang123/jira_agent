@@ -100,8 +100,10 @@ console if a step looks different.
 
 - [ ] **Slash Commands → `/jira-agent`** Request URL = `ApiUrl`.
 - [ ] **Interactivity & Shortcuts** on, Request URL = `ApiUrl`.
-- [ ] **OAuth & Permissions → Bot Token Scopes**: `commands`, `chat:write` (and `chat:write.public` only if
-      `ApprovalDelivery=channel` must post in channels the bot was not invited to).
+- [ ] **OAuth & Permissions → Bot Token Scopes**: `commands`, `chat:write`, `users:read` (and `chat:write.public`
+      only if `ApprovalDelivery=channel` must post in channels the bot was not invited to). `users:read` reads the
+      user's Slack timezone when Jira does not return one; workspaces installed before it was added keep working
+      (Jira timezone, else `JiraTimezone`) and get the Slack fallback after reinstalling through the install link.
 - [ ] **App Home → Messages Tab** enabled. Approvals are sent as a DM from the bot (`ApprovalDelivery=dm`,
       default); users who cannot open the bot DM get "couldn't send you the approval" instead of a request.
 - [ ] **OAuth & Permissions → Redirect URLs**: add the stack output `SlackRedirectUrl` exactly.

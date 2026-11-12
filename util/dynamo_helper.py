@@ -227,7 +227,23 @@ class DynamoHelper:
         if not access_token or not cloud_id:
             raise RuntimeError("Jira OAuth record is missing access token or cloud ID")
         return {"access_token": access_token, "cloud_id": cloud_id,
-                "jira_site_url": user.get("jiraSiteUrl")}
+                "jira_site_url": user.get("jiraSiteUrl"), "time_zone": user.get("timeZone")}
+
+    def get_user_timezone_name(self, team_id, slack_user_id):
+        """The user's stored IANA timezone, or None (not connected, or connected before it was stored)."""
+        return self._read_connection(team_id, slack_user_id, "timeZone").get("timeZone")
+
+    def set_user_timezone(self, team_id, slack_user_id, time_zone):
+        """Store the timezone on an existing connection (backfill for connections made before it was stored)."""
+        try:
+            self.oauth_table().update_item(
+                Key=user_key(team_id, slack_user_id),
+                UpdateExpression="SET timeZone = :tz",
+                ConditionExpression="attribute_exists(slack_user_id)",
+                ExpressionAttributeValues={":tz": time_zone},
+            )
+        except ClientError:
+            logger.warning("Could not store the timezone for Slack user %s", slack_user_id)
 
     def refresh_access_token(self, team_id, slack_user_id):
         table = self.oauth_table()

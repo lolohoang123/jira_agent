@@ -18,6 +18,7 @@ BOT_TOKEN = "xoxb-SECRET-token"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_installation_store: do not fake Slack installations")
+    config.addinivalue_line("markers", "real_timezone_lookup: do not fake per-user timezone lookups")
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +26,18 @@ def _fake_jira_cloud_id():
     """ApprovalService looks up the user's Jira site when creating an approval; never hit DynamoDB in tests."""
     with patch("approval.approval_service.current_jira_cloud_id", return_value=TEST_CLOUD_ID) as mock:
         yield mock
+
+
+@pytest.fixture(autouse=True)
+def _no_timezone_lookups(request, monkeypatch):
+    """Per-user timezone lookups never reach DynamoDB or Slack: no stored timezone, no Slack profile tz,
+    so the JIRA_TIMEZONE default applies. Tests of the lookups use the ``real_timezone_lookup`` marker."""
+    if request.node.get_closest_marker("real_timezone_lookup"):
+        return
+    from jira import authentication_jira
+    from util.dynamo_helper import DynamoHelper
+    monkeypatch.setattr(DynamoHelper, "get_user_timezone_name", lambda self, team_id, slack_user_id: None)
+    monkeypatch.setattr(authentication_jira, "slack_user_timezone", lambda team_id, slack_user_id: None)
 
 
 @pytest.fixture(autouse=True)

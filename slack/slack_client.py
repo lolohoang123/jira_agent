@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
@@ -7,6 +8,8 @@ from slack.installation_store import InstallationStore
 from util.config import get_secret
 
 OAUTH_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
+
+logger = logging.getLogger(__name__)
 
 
 def slack_api(method, payload, team_id, store=None):
@@ -21,6 +24,29 @@ def slack_api(method, payload, team_id, store=None):
     if not result.get("ok"):
         raise RuntimeError(f"Slack API {method} failed: {result.get('error', 'unknown_error')}")
     return result
+
+
+def slack_user_timezone(team_id, slack_user_id, store=None):
+    """The Slack profile timezone (``tz``, IANA name) of a user via ``users.info``; None when unavailable.
+
+    Needs the ``users:read`` bot scope: workspaces installed before it was added return ``missing_scope`` until
+    they reinstall, which is treated as "unknown" (the caller falls back to the default timezone).
+    """
+    try:
+        token = (store or InstallationStore()).get_bot_token(team_id)
+        req = urllib.request.Request(
+            "https://slack.com/api/users.info", data=urllib.parse.urlencode({"user": slack_user_id}).encode(),
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            result = json.loads(response.read().decode())
+    except Exception:
+        logger.warning("Could not read the Slack timezone of user %s", slack_user_id)
+        return None
+    if not result.get("ok"):
+        logger.warning("Slack users.info failed for user %s: %s", slack_user_id, result.get("error", "unknown_error"))
+        return None
+    return (result.get("user") or {}).get("tz")
 
 
 def exchange_install_code(code, redirect_uri):

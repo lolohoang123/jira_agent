@@ -1,6 +1,5 @@
 """LLM-assisted intent planning with deterministic, allow-listed execution."""
 import logging
-import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,13 +8,16 @@ from agent.llm_client import BedrockLLMClient
 from agent.schemas import AgentResult
 from agent.tool_registry import execute_plan
 from approval.approval_service import approval_posted_message
+from util.timezone import user_timezone_name
 
 logger = logging.getLogger(__name__)
 
 
 class AgentOrchestrator:
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, timezone_lookup=None):
         self.llm = llm_client or BedrockLLMClient()
+        # (team_id, slack_user_id) -> IANA timezone name; injectable so tests need no DynamoDB.
+        self.timezone_lookup = timezone_lookup or user_timezone_name
 
     def handle(self, slack_user_id: str, text: str, channel_id: str = "", team_id: str = "") -> AgentResult:
         text = (text or "").strip()
@@ -23,7 +25,7 @@ class AgentOrchestrator:
             return AgentResult("Tell me what Jira information you need.")
         if not slack_user_id or not channel_id or not team_id:
             return AgentResult("I couldn't identify the Slack user or channel for this request.")
-        tz_name = os.environ.get("JIRA_TIMEZONE", "Asia/Ho_Chi_Minh")
+        tz_name = self.timezone_lookup(team_id, slack_user_id)
         now = datetime.now(ZoneInfo(tz_name))
         context = (
             f"Current date: {now.date().isoformat()}\n"

@@ -34,7 +34,7 @@ A Slack bot (`/jira-agent`) that lets users connect Jira via Atlassian OAuth 2.0
 
 ## Conventions
 - Python 3.12 (Lambda runtime). Keep dependencies minimal – stdlib + `boto3`; HTTP calls use the standard library.
-- Timezone comes from `JIRA_TIMEZONE` (default `Asia/Ho_Chi_Minh`), via `zoneinfo`.
+- Timezone is per user (`util/timezone.py`): `timeZone` on the Jira connection, taken from Jira `/myself` on connect (Slack `users.info` `tz` as fallback; backfilled from Jira for older rows). `JIRA_TIMEZONE` (default `Asia/Ho_Chi_Minh`) is only the fallback. Never read `JIRA_TIMEZONE` directly for "today" or worklog start times.
 - Token expiry is stored as Unix seconds; reads must stay backward-compatible with old millisecond values.
 - DynamoDB TTL attributes: `ttl` on `APPROVALS_TABLE`, `expiresAt` on `OAUTH_STATES_TABLE`.
 - Build Jira issue links from the user's stored `jiraSiteUrl`, not a global URL.

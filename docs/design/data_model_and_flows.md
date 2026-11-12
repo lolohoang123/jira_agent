@@ -62,6 +62,7 @@ erDiagram
         string jiraCloudId "Jira site cloud id"
         string jiraSiteUrl "Used to build issue links"
         string jiraSiteName
+        string timeZone "IANA tz: Jira /myself, else Slack users.info; backfilled from Jira if missing"
         string accessToken "Secret, never logged, removed on revoke"
         string refreshToken "Secret, rotated on refresh, removed on revoke"
         number accessTokenExpiresAt "Unix seconds (old rows: ms)"
@@ -346,7 +347,7 @@ sequenceDiagram
 ```
 
 `logwork today` follows the same path with task `jira_worklog`: issues with worklogs today, then each issue's
-worklogs filtered to the user and to today in `JIRA_TIMEZONE` (at most 23 shown; Slack allows 50 blocks).
+worklogs filtered to the user and to today in the user's timezone (`timeZone`, else `JIRA_TIMEZONE`) (at most 23 shown; Slack allows 50 blocks).
 
 `logwork find <keyword>` (alias `find <keyword>`) follows the same path with task `search_issues`:
 - the keyword is reduced to plain terms (`jql_text_terms`: quotes, backslashes and JQL/Lucene operators removed,

@@ -156,7 +156,7 @@ def test_install_redirects_to_slack_with_state(states):
     location = urllib.parse.urlparse(response["headers"]["Location"])
     assert f"{location.scheme}://{location.netloc}{location.path}" == "https://slack.com/oauth/v2/authorize"
     assert urllib.parse.parse_qs(location.query) == {
-        "client_id": ["111.222"], "scope": ["commands,chat:write"], "redirect_uri": [REDIRECT],
+        "client_id": ["111.222"], "scope": ["commands,chat:write,users:read"], "redirect_uri": [REDIRECT],
         "state": ["state-xyz"]}
     assert response["headers"]["Cache-Control"] == "no-store"
 

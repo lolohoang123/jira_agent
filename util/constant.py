@@ -12,4 +12,5 @@ APPROVALS_TABLE_ENV = "APPROVALS_TABLE"
 
 # Slack OAuth v2 ("Add to Slack"). Bot scopes only: slash command + messages/DMs from the bot.
 SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
-SLACK_BOT_SCOPES = ["commands", "chat:write"]
+# users:read -> users.info "tz" (timezone fallback when Jira does not return one)
+SLACK_BOT_SCOPES = ["commands", "chat:write", "users:read"]

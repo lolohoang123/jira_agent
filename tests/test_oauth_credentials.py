@@ -272,7 +272,7 @@ def test_tc14_valid_token_is_returned_without_refresh(table, clock):
 
     # Assert
     assert credentials == {"access_token": ACCESS, "cloud_id": "cloud-1",
-                           "jira_site_url": "https://acme.atlassian.net"}
+                           "jira_site_url": "https://acme.atlassian.net", "time_zone": None}
     refresh.assert_not_called()
     table.get_item.assert_called_once_with(Key={"team_id": "T1", "slack_user_id": "U1"}, ConsistentRead=True)
 
@@ -675,6 +675,59 @@ def test_tc40_valid_callback_stores_connection(helpers, atlassian, caplog):
         "accessTokenExpiresAtIso": "2023-11-14T23:13:20Z", "scope": "read:jira-work", "connected": True,
         "connectedAt": NOW, "updatedAt": NOW}
     assert_no_secrets(response["body"], caplog.text)
+
+
+@pytest.mark.parametrize("jira_tz,slack_tz,expected", [
+    ("Asia/Tokyo", "America/New_York", "Asia/Tokyo"),        # Jira profile wins
+    (None, "America/New_York", "America/New_York"),          # Slack profile is the fallback
+    ("Not/AZone", "Europe/Paris", "Europe/Paris"),           # invalid Jira value is ignored
+    (None, None, None),                                      # neither: nothing stored, default applies
+    (None, "bogus", None),
+])
+def test_tc40b_callback_stores_user_timezone(helpers, atlassian, jira_tz, slack_tz, expected):
+    # Arrange
+    if jira_tz:
+        atlassian.responses["myself"] = {"accountId": "acc-1", "timeZone": jira_tz}
+    slack_lookup = MagicMock(return_value=slack_tz)
+    with patch.object(auth_module, "slack_user_timezone", slack_lookup):
+        # Act
+        response = callback({"code": "auth-code", "state": "state-123"})
+
+    # Assert
+    assert response["statusCode"] == 200
+    assert stored_record(helpers).get("timeZone") == expected
+    if jira_tz == "Asia/Tokyo":
+        slack_lookup.assert_not_called()
+    else:
+        slack_lookup.assert_called_once_with("T1", "U1")
+
+
+@pytest.mark.real_timezone_lookup
+def test_tc40c_get_and_set_user_timezone(table):
+    # Arrange
+    table.get_item.return_value = {"Item": {"timeZone": "Asia/Tokyo", "connected": True}}
+    helper = DynamoHelper("OAUTH_USERS_TABLE")
+
+    # Act
+    name = helper.get_user_timezone_name("T1", "U1")
+    helper.set_user_timezone("T1", "U1", "Europe/Paris")
+
+    # Assert
+    assert name == "Asia/Tokyo"
+    assert table.get_item.call_args.kwargs["Key"] == {"team_id": "T1", "slack_user_id": "U1"}
+    update = table.update_item.call_args.kwargs
+    assert update["Key"] == {"team_id": "T1", "slack_user_id": "U1"}
+    assert update["ExpressionAttributeValues"] == {":tz": "Europe/Paris"}
+    assert update["ConditionExpression"] == "attribute_exists(slack_user_id)"
+
+
+@pytest.mark.real_timezone_lookup
+def test_tc40d_timezone_of_disconnected_user_is_none(table):
+    # Arrange
+    table.get_item.return_value = {"Item": {"timeZone": "Asia/Tokyo", "connected": False}}
+
+    # Act & Assert
+    assert DynamoHelper("OAUTH_USERS_TABLE").get_user_timezone_name("T1", "U1") is None
 
 
 def test_tc41_default_expiry_is_one_hour(helpers, atlassian):

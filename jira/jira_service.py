@@ -1,11 +1,14 @@
-import os
+import logging
 import re
 import urllib.parse
 from datetime import datetime, time as dt_time
-from zoneinfo import ZoneInfo
 
 from jira.jira_client import JiraClient
 from util.common import validate_duration
+from util.dynamo_helper import DynamoHelper
+from util.timezone import resolve_timezone, valid_timezone_name
+
+logger = logging.getLogger(__name__)
 
 
 ISSUE_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+")
@@ -42,6 +45,29 @@ class JiraService:
         self.client = JiraClient(team_id, slack_user_id)
         self.team_id = team_id
         self.slack_user_id = slack_user_id
+        self._timezone = None
+
+    @property
+    def timezone(self):
+        """The user's timezone (stored on the connection), else the ``JIRA_TIMEZONE`` default."""
+        if self._timezone is None:
+            credentials = getattr(self.client, "credentials", None)
+            name = credentials.get("time_zone") if isinstance(credentials, dict) else None
+            if isinstance(credentials, dict) and not valid_timezone_name(name):
+                name = self._backfill_timezone()
+            self._timezone = resolve_timezone(name)
+        return self._timezone
+
+    def _backfill_timezone(self):
+        """Connections made before timezones were stored: read it from Jira once and save it."""
+        try:
+            name = valid_timezone_name((self.client.request("/rest/api/3/myself") or {}).get("timeZone"))
+        except Exception:
+            logger.warning("Could not read the Jira timezone of Slack user %s", self.slack_user_id)
+            return None
+        if name:
+            DynamoHelper("OAUTH_USERS_TABLE").set_user_timezone(self.team_id, self.slack_user_id, name)
+        return name
 
     @property
     def cloud_id(self):
@@ -136,7 +162,7 @@ class JiraService:
         return f"{hours}h {minutes}m" if hours and minutes else (f"{hours}h" if hours else f"{minutes}m")
 
     def fetch_today_worklogs(self, account_id):
-        tz = ZoneInfo(os.environ.get("JIRA_TIMEZONE", "Asia/Ho_Chi_Minh"))
+        tz = self.timezone
         now = datetime.now(tz)
         day = now.date()
         start = datetime.combine(day, dt_time.min, tzinfo=tz)
@@ -170,8 +196,8 @@ class JiraService:
             raise ValueError("Invalid remaining estimate option.")
         if estimate == "new" and not form.get("new_estimate"):
             raise ValueError("Enter a new remaining estimate or choose another option.")
-        tz = ZoneInfo(os.environ.get("JIRA_TIMEZONE", "Asia/Ho_Chi_Minh"))
-        started = datetime.strptime(f"{form['date']} {form['start_time']}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+        tz = self.timezone
+        started =datetime.strptime(f"{form['date']} {form['start_time']}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
         started_text = started.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         started_text = started_text[:23] + started.strftime("%z")
         body = {"started": started_text, "timeSpent": duration}
