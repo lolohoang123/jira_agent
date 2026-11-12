@@ -1,5 +1,7 @@
 # Jira Slack Agent – modular MVP
 
+> End-user guide (Vietnamese, illustrated): [docs/user-guide/guideline.html](docs/user-guide/guideline.html). Open it in a browser or print it to PDF.
+
 ## Current features
 - **Multi-workspace (Slack OAuth v2):** each Slack workspace installs the app through the "Add to Slack" link (`GET /slack/install` → `GET /slack/oauth/callback`); its bot token is stored per `team_id` in the installations table. Org-wide Enterprise Grid installs are refused. `app_uninstalled` deletes the workspace's installation, every Jira connection and its pending approvals; `tokens_revoked` (bot) deletes the installation (`POST /slack/events`).
 - `/jira-agent connect`: Atlassian OAuth 2.0 (3LO); the connection is stored per (`team_id`, `slack_user_id`).

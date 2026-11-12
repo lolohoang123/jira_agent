@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hướng dẫn Jira Agent</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --paper: #ffffff; --ink: #1f2328; --muted: #5d6470; --line: #e3e1dc;
+    --accent: #2f5bd3; --accent-ink: #ffffff; --accent-soft: #e8eefc;
+    --ok: #1f7a4d; --ok-soft: #e4f4ec; --warn: #9a5b00; --warn-soft: #fdf1dc; --bad: #b42318; --bad-soft: #fde8e6;
+    --screen: #fbfbfa; --chip: #f0efeb; --code: #f3f1ec; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 6px 20px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15171a; --paper: #1d2024; --ink: #e8e6e3; --muted: #a3a8b0; --line: #30343a;
+      --accent: #7b9cff; --accent-ink: #0f1420; --accent-soft: #232c45;
+      --ok: #5fcf96; --ok-soft: #1c3329; --warn: #f0b860; --warn-soft: #3a2e1a; --bad: #ff8a80; --bad-soft: #3d2120;
+      --screen: #24272c; --chip: #2a2e34; --code: #2a2d33; --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15171a; --paper: #1d2024; --ink: #e8e6e3; --muted: #a3a8b0; --line: #30343a;
+    --accent: #7b9cff; --accent-ink: #0f1420; --accent-soft: #232c45;
+    --ok: #5fcf96; --ok-soft: #1c3329; --warn: #f0b860; --warn-soft: #3a2e1a; --bad: #ff8a80; --bad-soft: #3d2120;
+    --screen: #24272c; --chip: #2a2e34; --code: #2a2d33; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  header.hero { padding: 8px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+  .eyebrow { color: var(--accent); font-weight: 600; font-size: 14px; letter-spacing: .02em; }
+  h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.2; margin: 6px 0 10px; }
+  h2 { font-size: 24px; line-height: 1.3; margin: 48px 0 8px; scroll-margin-top: 16px; }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  p { margin: 8px 0 12px; }
+  .lead { font-size: 18px; color: var(--muted); max-width: 62ch; }
+  a { color: var(--accent); }
+  code, kbd {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .92em;
+    background: var(--code); padding: 2px 6px; border-radius: 6px; white-space: nowrap;
+  }
+  .num { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+         background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px; margin-right: 8px;
+         vertical-align: 2px; }
+
+  /* table of contents */
+  nav.toc { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; box-shadow: var(--shadow); }
+  nav.toc strong { display: block; margin-bottom: 6px; }
+  nav.toc ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 32px; }
+  nav.toc li { break-inside: avoid; padding: 2px 0; }
+  @media (max-width: 600px) { nav.toc ol { columns: 1; } }
+
+  /* feature cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); }
+  .card .ico { font-size: 26px; line-height: 1; }
+  .card b { display: block; margin: 8px 0 2px; }
+  .card span { color: var(--muted); font-size: 14px; }
+
+  /* steps */
+  .steps { list-style: none; padding: 0; margin: 12px 0; counter-reset: s; }
+  .steps > li { counter-increment: s; position: relative; padding: 2px 0 14px 44px; }
+  .steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 30px; height: 30px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+
+  /* callouts */
+  .note { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .note.tip { background: var(--accent-soft); }
+  .note.ok { background: var(--ok-soft); }
+  .note.warn { background: var(--warn-soft); }
+  .note b:first-child { margin-right: 4px; }
+
+  /* figure frame */
+  figure { margin: 18px 0 24px; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; text-align: center; }
+  .screen { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+  .bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; background: var(--chip); border-bottom: 1px solid var(--line);
+         font-size: 13px; color: var(--muted); }
+  .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); display: inline-block; }
+  .bar .title { margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .body { padding: 16px; background: var(--screen); }
+
+  /* chat mock */
+  .msg { display: flex; gap: 10px; margin: 0 0 14px; }
+  .msg:last-child { margin-bottom: 0; }
+  .avatar { flex: 0 0 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+  .avatar.me { background: #f4d7b5; color: #6b3d0b; }
+  .avatar.bot { background: var(--accent); color: var(--accent-ink); }
+  .msg .who { font-weight: 700; font-size: 15px; }
+  .msg .who small { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 12px; }
+  .msg .txt { font-size: 15px; overflow-wrap: anywhere; }
+  .only-you { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .blk { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 6px; }
+  .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .row .meta { color: var(--muted); font-size: 13px; }
+  .link { color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+  .btn { display: inline-block; border-radius: 8px; padding: 6px 12px; font-size: 14px; font-weight: 600; white-space: nowrap;
+         border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
+  .btn.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .btn.blue { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.danger { color: var(--bad); border-color: var(--bad); background: transparent; }
+  .composer { margin-top: 14px; border: 2px solid var(--accent); border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, Consolas, monospace;
+              font-size: 15px; background: var(--paper); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .composer .send { font-family: system-ui, sans-serif; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .hl { outline: 3px solid var(--warn); outline-offset: 2px; border-radius: 8px; }
+
+  /* modal mock */
+  .modal { max-width: 460px; margin: 0 auto; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .modal h4 { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 17px; }
+  .modal .f { padding: 8px 16px; }
+  .modal label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .modal label small { font-weight: 400; color: var(--muted); }
+  .input { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 14px; background: var(--screen); min-height: 36px; }
+  .input.ph { color: var(--muted); }
+  .input.area { min-height: 56px; }
+  .modal .foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
+
+  /* web page mock */
+  .page { text-align: center; padding: 28px 16px; }
+  .page .big { font-size: 40px; line-height: 1; }
+  .page h5 { font-size: 20px; margin: 10px 0 6px; }
+  .page p { color: var(--muted); margin: 4px auto; max-width: 42ch; }
+  .consent { max-width: 420px; margin: 0 auto; text-align: left; }
+  .consent ul { margin: 6px 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }
+  .select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--paper); display: flex; justify-content: space-between; font-size: 14px; }
+
+  /* tables */
+  .tbl { width: 100%; border-collapse: collapse; margin: 12px 0; background: var(--paper); border-radius: 12px; overflow: hidden;
+         border: 1px solid var(--line); font-size: 15px; }
+  .tbl th, .tbl td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tbl th { background: var(--chip); font-size: 14px; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .scroll { overflow-x: auto; }
+  @media (max-width: 600px) {
+    .tbl.stack thead { display: none; }
+    .tbl.stack, .tbl.stack tbody, .tbl.stack tr, .tbl.stack td { display: block; width: 100%; }
+    .tbl.stack tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+    .tbl.stack td { border: 0; padding: 4px 12px; }
+    .tbl.stack td::before { content: attr(data-l); display: block; font-size: 12px; color: var(--muted); font-weight: 600; }
+  }
+
+  details { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 0 16px; margin: 8px 0; }
+  details summary { cursor: pointer; padding: 12px 0; font-weight: 600; list-style-position: outside; }
+  details[open] summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  details > :last-child { margin-bottom: 14px; }
+
+  footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+
+  @media print {
+    body { background: #fff; }
+    .screen, .card, nav.toc, details, .tbl { box-shadow: none; }
+    h2 { break-before: auto; }
+    figure, .note, details { break-inside: avoid; }
+    details { display: block; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">Hướng dẫn cho người dùng</div>
+  <h1>Ghi giờ làm Jira ngay trong Slack</h1>
+  <p class="lead">Jira Agent giúp bạn xem ticket và ghi thời gian làm việc (log work) vào Jira mà không cần rời Slack. Bạn chỉ cần gõ một lệnh ngắn bắt đầu bằng <code>/jira-agent</code>.</p>
+</header>
+
+<nav class="toc" aria-label="Mục lục">
+  <strong>Nội dung</strong>
+  <ol>
+    <li><a href="#lam-duoc-gi">Jira Agent làm được gì?</a></li>
+    <li><a href="#chuan-bi">Trước khi bắt đầu</a></li>
+    <li><a href="#ket-noi">Kết nối tài khoản Jira (một lần)</a></li>
+    <li><a href="#xem-ticket">Xem ticket của bạn</a></li>
+    <li><a href="#tim-ticket">Tìm ticket</a></li>
+    <li><a href="#worklog-hom-nay">Xem giờ đã ghi hôm nay</a></li>
+    <li><a href="#ghi-gio">Ghi thời gian làm việc</a></li>
+    <li><a href="#ngat-ket-noi">Ngắt kết nối Jira</a></li>
+    <li><a href="#loi-thuong-gap">Khi gặp lỗi</a></li>
+    <li><a href="#tom-tat">Bảng lệnh tóm tắt</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<h2 id="lam-duoc-gi"><span class="num">1</span>Jira Agent làm được gì?</h2>
+<div class="cards">
+  <div class="card"><div class="ico">📋</div><b>Xem ticket được giao</b><span>Danh sách ticket của bạn, trạng thái và tổng giờ đã ghi.</span></div>
+  <div class="card"><div class="ico">🔍</div><b>Tìm ticket</b><span>Theo từ khoá hoặc mã ticket như PROJ-123.</span></div>
+  <div class="card"><div class="ico">🕒</div><b>Xem giờ hôm nay</b><span>Những gì bạn đã ghi vào Jira trong ngày.</span></div>
+  <div class="card"><div class="ico">✍️</div><b>Ghi giờ làm</b><span>Điền form ngắn, bấm <b style="display:inline">Approve</b> là xong.</span></div>
+</div>
+<div class="note ok"><b>An toàn:</b> Jira Agent <b>không bao giờ</b> tự ghi vào Jira. Mỗi lần ghi giờ, bạn sẽ nhận một tin nhắn xác nhận và chỉ khi <b>chính bạn</b> bấm <b>Approve</b> thì dữ liệu mới được ghi.</div>
+
+<!-- 2 -->
+<h2 id="chuan-bi"><span class="num">2</span>Trước khi bắt đầu</h2>
+<p>Bạn cần hai thứ:</p>
+<ul class="steps">
+  <li><b>Jira Agent đã được cài vào Slack của công ty.</b><br>Thường do quản trị viên Slack làm một lần cho cả công ty. Nếu khi gõ lệnh bạn thấy thông báo <i>“This Slack workspace hasn't installed the Jira app yet”</i>, hãy bấm vào link <b>Install the app</b> trong thông báo đó hoặc nhờ quản trị viên cài giúp.</li>
+  <li><b>Một tài khoản Jira (Atlassian)</b> mà bạn đang dùng hằng ngày, ví dụ <code>tencongty.atlassian.net</code>.</li>
+</ul>
+<div class="note tip"><b>Mẹo:</b> Tất cả câu trả lời của Jira Agent trong kênh đều ở chế độ <i>“Only visible to you”</i> (chỉ mình bạn thấy), nên bạn có thể gõ lệnh ở bất kỳ kênh nào mà không làm phiền người khác.</div>
+
+<!-- 3 -->
+<h2 id="ket-noi"><span class="num">3</span>Kết nối tài khoản Jira <small style="font-weight:400;color:var(--muted)">(chỉ làm một lần)</small></h2>
+<p>Bước này cho phép Jira Agent đọc ticket và ghi giờ <b>dưới tên của bạn</b>. Giống như khi bạn bấm “Đăng nhập bằng Google” ở một trang web.</p>
+
+<h3>Bước 1 — Gõ lệnh kết nối</h3>
+<p>Ở ô nhập tin nhắn của bất kỳ kênh nào, gõ <code>/jira-agent connect</code> rồi nhấn <kbd>Enter</kbd>.</p>
+<figure>
+  <div class="screen" role="img" aria-label="Màn hình Slack: gõ lệnh /jira-agent connect và nhận link Connect Jira">
+    <div class="bar"><i></i><i></i><i></i><span class="title"># general</span></div>
+    <div class="body">
+      <div class="msg">
+        <div class="avatar bot">JA</div>
+        <div>
+          <div class="only-you">👁 Only visible to you</div>
+          <div class="who">Jira Agent <small>APP</small></div>
+          <div class="txt">Connect your Jira account: <span class="link hl">Connect Jira</span>. This link expires in 10 minutes and can only be used once.</div>
+        </div>
+      </div>
+      <div class="composer"><span>/jira-agent connect</span><span class="send">Enter ↵</span></div>
+    </div>
+  </div>
+  <figcaption>Hình 1. Gõ lệnh, Jira Agent trả về link <b>Connect Jira</b> (khung vàng).</figcaption>
+</figure>
+
+<h3>Bước 2 — Bấm “Connect Jira” và cho phép truy cập</h3>
+<p>Trình duyệt mở trang của Atlassian. Nếu chưa đăng nhập, hãy đăng nhập tài khoản Jira của bạn. Sau đó:</p>
+<ol>
+  <li>Ở ô <b>“Use app on”</b>, chọn đúng trang Jira công ty bạn (nếu chỉ có một thì đã được chọn sẵn).</li>
+  <li>Bấm nút <b>Accept</b>.</li>
+</ol>
+<figure>
+  <div class="screen" role="img" aria-label="Trang xin quyền của Atlassian với ô chọn trang Jira và nút Accept">
+    <div class="bar"><i></i><i></i><i></i><span class="title">auth.atlassian.com</span></div>
+    <div class="body">
+      <div class="consent">
+        <p style="margin-top:0"><b>Jira Agent</b> đang yêu cầu quyền truy cập tài khoản Atlassian của bạn.</p>
+        <label style="font-size:14px;font-weight:600">Use app on</label>
+        <div class="select hl"><span>tencongty.atlassian.net</span><span>▾</span></div>
+        <ul>
+          <li>Xem thông tin hồ sơ Jira của bạn</li>
+          <li>Xem ticket và worklog</li>
+          <li>Ghi worklog vào Jira</li>
+        </ul>
+        <div style="display:flex;justify-content:flex-end;gap:8px"><span class="btn">Cancel</span><span class="btn blue hl">Accept</span></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Hình 2. Chọn trang Jira của công ty và bấm <b>Accept</b>. (Hình minh hoạ, giao diện thật có thể khác một chút.)</figcaption>
+</figure>
+
+<h3>Bước 3 — Quay lại Slack</h3>
+<p>Khi thấy trang báo <b>“Jira connected successfully”</b> là xong. Bạn có thể đóng tab này và quay về Slack.</p>
+<figure>
+  <div class="screen" role="img" aria-label="Trang báo kết nối Jira thành công">
+    <div class="bar"><i></i><i></i><i></i><span class="title">Jira Agent</span></div>
+    <div class="body page">
+      <div class="big">✅</div>
+      <h5>Jira connected successfully</h5>
+      <p>Connected to Tên công ty. Return to Slack and run <code>/jira-agent list</code> or <code>/jira-agent logwork today</code>.</p>
+    </div>
+  </div>
+  <figcaption>Hình 3. Kết nối thành công.</figcaption>
+</figure>
+<div class="note warn"><b>Lưu ý:</b> Link <b>Connect Jira</b> chỉ dùng được <b>một lần</b> và <b>hết hạn sau 10 phút</b>. Nếu bạn thấy <i>“This link has expired or has already been used”</i>, chỉ cần gõ lại <code>/jira-agent connect</code> để lấy link mới.</div>
+
+<!-- 4 -->
+<h2 id="xem-ticket"><span class="num">4</span>Xem ticket của bạn</h2>
+<p>Gõ <code>/jira-agent list</code>. Sau vài giây, bạn sẽ thấy tối đa 20 ticket đang được giao cho bạn, ticket mới cập nhật nằm trên cùng.</p>
+<figure>
+  <div class="screen" role="img" aria-label="Danh sách ticket được giao, mỗi dòng có nút Log Time">
+    <div class="bar"><i></i><i></i><i></i><span class="title"># general</span></div>
+    <div class="body">
+      <div class="msg">
+        <div class="avatar bot">JA</div>
+        <div style="flex:1;min-width:0">
+          <div class="only-you">👁 Only visible to you</div>
+          <div class="who">Jira Agent <small>APP</small></div>
+          <div class="txt"><b>Your assigned Jira tickets</b><br><span class="meta" style="color:var(--muted);font-size:13px">Showing up to 20 tickets, ordered by recently updated.</span></div>
+          <div class="blk">
+            <div class="row"><div><span class="link">PROJ-12 — Sửa lỗi đăng nhập</span><div class="meta">Status: In Progress · Total logged: <b>3h 30m</b></div></div><span class="btn primary hl">Log Time</span></div>
+            <div class="row"><div><span class="link">PROJ-8 — Trang báo cáo tháng</span><div class="meta">Status: To Do · Total logged: <b>0m</b></div></div><span class="btn primary">Log Time</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Hình 4. Bấm vào tên ticket để mở trong Jira, hoặc bấm <b>Log Time</b> để ghi giờ cho ticket đó.</figcaption>
+</figure>
+
+<!-- 5 -->
+<h2 id="tim-ticket"><span class="num">5</span>Tìm ticket</h2>
+<p>Khi ticket không được giao cho bạn hoặc bạn không nhớ mã ticket, gõ:</p>
+<p><code>/jira-agent logwork find</code> <i>từ khoá</i></p>
+<div class="scroll"><table class="tbl stack">
+  <thead><tr><th>Bạn gõ</th><th>Jira Agent tìm</th></tr></thead>
+  <tbody>
+    <tr><td data-l="Bạn gõ"><code>/jira-agent logwork find đăng nhập</code></td><td data-l="Jira Agent tìm">Ticket có chứa từ bắt đầu bằng “đăng” và “nhập”</td></tr>
+    <tr><td data-l="Bạn gõ"><code>/jira-agent logwork find PROJ-123</code></td><td data-l="Jira Agent tìm">Đúng ticket PROJ-123 (hiện đầu tiên)</td></tr>
+  </tbody>
+</table></div>
+<p>Kết quả hiển thị giống Hình 4, mỗi ticket có nút <b>Log Time</b>. Nếu có hơn 20 kết quả, hãy thêm từ khoá để thu hẹp.</p>
+
+<!-- 6 -->
+<h2 id="worklog-hom-nay"><span class="num">6</span>Xem giờ đã ghi hôm nay</h2>
+<p>Gõ <code>/jira-agent logwork today</code> để xem những gì bạn đã ghi trong ngày và tổng số giờ.</p>
+<figure>
+  <div class="screen" role="img" aria-label="Danh sách worklog hôm nay với giờ bắt đầu, thời lượng và tổng">
+    <div class="bar"><i></i><i></i><i></i><span class="title"># general</span></div>
+    <div class="body">
+      <div class="msg">
+        <div class="avatar bot">JA</div>
+        <div style="flex:1;min-width:0">
+          <div class="only-you">👁 Only visible to you</div>
+          <div class="who">Jira Agent <small>APP</small></div>
+          <div class="blk">
+            <b>Jira Worklogs — 12/11/2026</b>
+            <div class="row"><div><span class="link">PROJ-12 Sửa lỗi đăng nhập</span><div class="meta">🕒 09:00 · 1h 30m<br>📝 Review code và sửa test</div></div><span class="btn primary">Log Time</span></div>
+            <div class="row"><div><span class="link">PROJ-8 Trang báo cáo tháng</span><div class="meta">🕒 13:30 · 2h</div></div><span class="btn primary">Log Time</span></div>
+            <div class="row"><b>Total: 3h 30m</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Hình 5. Giờ đã ghi hôm nay.</figcaption>
+</figure>
+<div class="note tip"><b>Múi giờ:</b> “Hôm nay” và giờ bắt đầu được tính theo <b>múi giờ trong hồ sơ Jira của bạn</b>. Nếu giờ hiển thị bị lệch, hãy kiểm tra múi giờ trong <i>Atlassian → Profile → Account settings</i>.</div>
+
+<!-- 7 -->
+<h2 id="ghi-gio"><span class="num">7</span>Ghi thời gian làm việc</h2>
+<p>Có 3 bước: <b>mở form → điền → xác nhận</b>.</p>
+
+<h3>Bước 1 — Mở form Log Time</h3>
+<p>Bấm nút <b>Log Time</b> cạnh ticket trong kết quả của <code>list</code>, <code>logwork find</code> hoặc <code>logwork today</code> (Hình 4, Hình 5). Mã ticket sẽ được điền sẵn.</p>
+
+<h3>Bước 2 — Điền thông tin và bấm “Log Time”</h3>
+<figure>
+  <div class="screen" role="img" aria-label="Form Log Time với các ô Issue, Date, Duration, Start Time, Description, Remaining estimate">
+    <div class="body">
+      <div class="modal">
+        <h4>Log Time</h4>
+        <div class="f"><label>Issue</label><div class="input">PROJ-12</div></div>
+        <div class="f"><label>Date</label><div class="input">📅 12/11/2026</div></div>
+        <div class="f"><label>Duration <span class="tag">BẮT BUỘC</span></label><div class="input hl">1h 30m</div></div>
+        <div class="f"><label>Start Time</label><div class="input">🕘 09:00</div></div>
+        <div class="f"><label>Description <small>(optional)</small></label><div class="input area ph">Bạn đã làm gì?</div></div>
+        <div class="f"><label>Remaining estimate</label><div class="input">Use existing estimate ▾</div></div>
+        <div class="f"><label>New remaining estimate <small>(if selected above)</small></label><div class="input ph">e.g. 2h or 1d</div></div>
+        <div class="foot"><span class="btn">Cancel</span><span class="btn primary">Log Time</span></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Hình 6. Form Log Time. Thường bạn chỉ cần nhập <b>Duration</b>, các ô còn lại đã có sẵn giá trị.</figcaption>
+</figure>
+
+<div class="scroll"><table class="tbl stack">
+  <thead><tr><th>Ô</th><th>Điền gì</th></tr></thead>
+  <tbody>
+    <tr><td data-l="Ô"><b>Issue</b></td><td data-l="Điền gì">Mã ticket, ví dụ <code>PROJ-12</code>. Đã điền sẵn khi bạn bấm Log Time từ danh sách.</td></tr>
+    <tr><td data-l="Ô"><b>Date</b></td><td data-l="Điền gì">Ngày làm việc. Mặc định là hôm nay.</td></tr>
+    <tr><td data-l="Ô"><b>Duration</b></td><td data-l="Điền gì">Bạn đã làm bao lâu. Xem cách viết ở bảng bên dưới.</td></tr>
+    <tr><td data-l="Ô"><b>Start Time</b></td><td data-l="Điền gì">Giờ bắt đầu. Mặc định 09:00.</td></tr>
+    <tr><td data-l="Ô"><b>Description</b></td><td data-l="Điền gì">Không bắt buộc. Mô tả ngắn công việc đã làm.</td></tr>
+    <tr><td data-l="Ô"><b>Remaining estimate</b></td><td data-l="Điền gì">
+      <b>Use existing estimate</b>: giữ nguyên thời gian còn lại (nên chọn nếu không chắc).<br>
+      <b>Adjust automatically</b>: Jira tự trừ số giờ vừa ghi.<br>
+      <b>Set a new estimate</b>: tự nhập thời gian còn lại mới vào ô bên dưới.</td></tr>
+  </tbody>
+</table></div>
+
+<h3>Cách viết thời lượng (Duration)</h3>
+<div class="scroll"><table class="tbl">
+  <thead><tr><th>Bạn viết</th><th>Nghĩa là</th></tr></thead>
+  <tbody>
+    <tr><td><code>30m</code></td><td>30 phút</td></tr>
+    <tr><td><code>2h</code></td><td>2 giờ</td></tr>
+    <tr><td><code>1h 30m</code></td><td>1 giờ 30 phút</td></tr>
+    <tr><td><code>1d</code></td><td>1 ngày công = 8 giờ</td></tr>
+  </tbody>
+</table></div>
+<p style="color:var(--muted);font-size:14px">Thời lượng phải lớn hơn 0 và mỗi lần ghi tối đa 24 giờ.</p>
+
+<h3>Bước 3 — Xác nhận bằng nút “Approve”</h3>
+<p>Sau khi bấm <b>Log Time</b>, Jira Agent gửi cho bạn một <b>tin nhắn riêng (DM)</b>. Kiểm tra lại thông tin rồi bấm <b>Approve</b>.</p>
+<figure>
+  <div class="screen" role="img" aria-label="Tin nhắn riêng xin xác nhận ghi worklog với nút Approve và Reject">
+    <div class="bar"><i></i><i></i><i></i><span class="title">Jira Agent · Messages</span></div>
+    <div class="body">
+      <div class="msg">
+        <div class="avatar bot">JA</div>
+        <div style="flex:1;min-width:0">
+          <div class="who">Jira Agent <small>APP · 09:41</small></div>
+          <div class="blk">
+            <b>Approve Jira worklog?</b><br>
+            Issue: <b>PROJ-12</b><br>Date: 2026-11-12<br>Start: 09:00<br>Duration: <b>1h 30m</b><br>Description: Review code và sửa test
+            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><span class="btn primary hl">Approve</span><span class="btn danger">Reject</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar bot">JA</div>
+        <div><div class="who">Jira Agent <small>APP · 09:41</small></div><div class="txt">✅ Jira worklog created successfully.</div></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Hình 7. Bấm <b>Approve</b> để ghi vào Jira, hoặc <b>Reject</b> để huỷ. Thấy dấu ✅ là đã ghi xong.</figcaption>
+</figure>
+<div class="note warn"><b>Cần biết:</b>
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Chưa bấm <b>Approve</b> thì <b>chưa có gì</b> được ghi vào Jira.</li>
+    <li>Yêu cầu xác nhận <b>hết hạn sau 24 giờ</b>. Hết hạn thì ghi lại từ đầu.</li>
+    <li>Chỉ người tạo yêu cầu mới bấm Approve/Reject được.</li>
+    <li>Gửi trùng một yêu cầu (cùng ticket, ngày, giờ, thời lượng) sẽ bị chặn để tránh ghi hai lần.</li>
+  </ul>
+</div>
+
+<!-- 8 -->
+<h2 id="ngat-ket-noi"><span class="num">8</span>Ngắt kết nối Jira</h2>
+<p>Khi không dùng nữa hoặc muốn chuyển sang tài khoản/trang Jira khác:</p>
+<ol>
+  <li>Gõ <code>/jira-agent disconnect</code>. Jira Agent xoá kết nối của bạn.</li>
+  <li><i>(Không bắt buộc)</i> Để thu hồi quyền hoàn toàn, vào <b>Atlassian → Account settings → Connected apps</b> và gỡ Jira Agent.</li>
+</ol>
+<p>Muốn kết nối lại hoặc đổi sang trang Jira khác, chỉ cần gõ <code>/jira-agent connect</code> một lần nữa. Kết nối mới sẽ thay thế kết nối cũ.</p>
+
+<!-- 9 -->
+<h2 id="loi-thuong-gap"><span class="num">9</span>Khi gặp lỗi</h2>
+<p>Bấm vào thông báo bạn thấy để xem cách xử lý.</p>
+
+<details>
+  <summary>“This Slack workspace hasn't installed the Jira app yet”</summary>
+  <p>Slack của công ty chưa cài Jira Agent. Bấm <b>Install the app</b> trong thông báo, hoặc nhờ quản trị viên Slack cài giúp. Nếu công ty yêu cầu quản trị viên duyệt app, hãy chờ họ duyệt.</p>
+</details>
+<details>
+  <summary>“Your Jira account is not connected. Run /jira-agent connect first.”</summary>
+  <p>Bạn chưa kết nối Jira, hoặc kết nối đã bị huỷ. Làm lại <a href="#ket-noi">mục 3</a>.</p>
+</details>
+<details>
+  <summary>“This link has expired or has already been used”</summary>
+  <p>Link Connect Jira đã quá 10 phút hoặc đã được bấm trước đó. Gõ <code>/jira-agent connect</code> để lấy link mới, bấm <b>một lần</b> và hoàn tất trong 10 phút.</p>
+</details>
+<details>
+  <summary>“Multiple Jira sites are available…”</summary>
+  <p>Tài khoản Atlassian của bạn đang cấp quyền cho Jira Agent trên nhiều trang Jira. Vào <b>Atlassian → Account settings → Connected apps</b>, gỡ Jira Agent khỏi các trang không dùng, rồi kết nối lại. Nếu vẫn lỗi, hãy báo bộ phận hỗ trợ.</p>
+</details>
+<details>
+  <summary>“I couldn't send you the approval … as a direct message”</summary>
+  <p>Jira Agent không gửi được tin nhắn riêng cho bạn, nên <b>chưa có gì được ghi</b>. Trong Slack, mở <b>Jira Agent</b> ở mục <i>Apps</i> bên trái, chọn tab <b>Messages</b> để mở cuộc trò chuyện, rồi thử ghi lại. Nếu không thấy tab Messages, hãy báo quản trị viên.</p>
+</details>
+<details>
+  <summary>“This approval is expired, already handled, or does not belong to you.”</summary>
+  <p>Yêu cầu đã quá 24 giờ, đã được bấm Approve/Reject trước đó, hoặc là yêu cầu của người khác. Nếu cần, hãy ghi lại từ đầu.</p>
+</details>
+<details>
+  <summary>“An identical worklog request … is already waiting for approval”</summary>
+  <p>Bạn đã gửi đúng yêu cầu này rồi. Tìm tin nhắn xác nhận cũ trong DM với Jira Agent và bấm <b>Approve</b> ở đó.</p>
+</details>
+<details>
+  <summary>“Duration must look like 30m, 1h, 1h 30m, or 1d.”</summary>
+  <p>Ô Duration viết chưa đúng. Xem <a href="#ghi-gio">bảng cách viết thời lượng</a>.</p>
+</details>
+<details>
+  <summary>“The natural-language assistant is temporarily disabled”</summary>
+  <p>Bạn đã gõ một câu không phải lệnh có sẵn. Hãy dùng các lệnh trong <a href="#tom-tat">bảng tóm tắt</a> bên dưới.</p>
+</details>
+<details>
+  <summary>Gõ lệnh nhưng không thấy trả lời gì</summary>
+  <p>Đợi vài giây rồi thử lại. Kiểm tra bạn gõ đúng <code>/jira-agent</code> (có dấu gạch ngang). Nếu vẫn không được, hãy báo bộ phận hỗ trợ kèm thời điểm bạn thử.</p>
+</details>
+
+<!-- 10 -->
+<h2 id="tom-tat"><span class="num">10</span>Bảng lệnh tóm tắt</h2>
+<div class="scroll"><table class="tbl stack">
+  <thead><tr><th>Lệnh</th><th>Dùng để</th></tr></thead>
+  <tbody>
+    <tr><td data-l="Lệnh"><code>/jira-agent connect</code></td><td data-l="Dùng để">Kết nối tài khoản Jira (làm một lần)</td></tr>
+    <tr><td data-l="Lệnh"><code>/jira-agent list</code></td><td data-l="Dùng để">Xem ticket đang được giao cho bạn</td></tr>
+    <tr><td data-l="Lệnh"><code>/jira-agent logwork find</code> <i>từ khoá</i></td><td data-l="Dùng để">Tìm ticket theo từ khoá hoặc mã ticket</td></tr>
+    <tr><td data-l="Lệnh"><code>/jira-agent logwork today</code></td><td data-l="Dùng để">Xem giờ đã ghi hôm nay</td></tr>
+    <tr><td data-l="Lệnh">Nút <b>Log Time</b></td><td data-l="Dùng để">Mở form ghi giờ cho một ticket</td></tr>
+    <tr><td data-l="Lệnh"><code>/jira-agent disconnect</code></td><td data-l="Dùng để">Ngắt kết nối Jira</td></tr>
+  </tbody>
+</table></div>
+
+<div class="note ok"><b>Ghi nhớ nhanh:</b> <code>connect</code> một lần → <code>list</code> → bấm <b>Log Time</b> → nhập <b>Duration</b> → bấm <b>Approve</b> trong DM.</div>
+
+<footer>
+  Hình trong tài liệu là hình minh hoạ, giao diện thật trên Slack và Atlassian có thể khác một chút.<br>
+  Cần hỗ trợ thêm? Liên hệ quản trị viên Slack hoặc bộ phận IT của công ty bạn.
+</footer>
+
+</div>
+</body>
+</html>
