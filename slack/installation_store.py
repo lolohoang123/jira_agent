@@ -9,9 +9,13 @@ import time
 
 import boto3
 
+from util.field_crypto import seal, unseal
+
 logger = logging.getLogger(__name__)
 
 TOKEN_CACHE_SECONDS = 60
+# Logical table name used in the KMS encryption context of the stored bot token.
+INSTALLATIONS_TABLE = "installations"
 _cache = {}  # team_id -> (bot_token, loaded_at); short-lived so uninstalls take effect quickly
 
 
@@ -44,7 +48,8 @@ class InstallationStore:
             "team_name": installation.get("team_name") or "",
             "app_id": installation.get("app_id") or "",
             "bot_user_id": installation.get("bot_user_id") or "",
-            "bot_token": installation["bot_token"],
+            "bot_token": seal(installation["bot_token"], INSTALLATIONS_TABLE, "bot_token",
+                              team_id=installation["team_id"]),
             "scope": installation.get("scope") or "",
             "installed_by_user_id": installation.get("installed_by_user_id") or "",
             "installed_at": now,
@@ -62,7 +67,7 @@ class InstallationStore:
             return cached[0]
         item = self.table.get_item(Key={"team_id": team_id}, ProjectionExpression="bot_token",
                                    ConsistentRead=True).get("Item") or {}
-        token = item.get("bot_token")
+        token = unseal(item.get("bot_token"), INSTALLATIONS_TABLE, "bot_token", team_id=team_id)
         if not token:
             raise SlackNotInstalled(team_id)
         _cache[team_id] = (token, time.monotonic())

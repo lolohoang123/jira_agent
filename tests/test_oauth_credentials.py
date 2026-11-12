@@ -389,7 +389,7 @@ def test_tc20_refresh_stores_new_tokens_and_releases_lock(table, clock, owner, u
     assert "REMOVE refreshLockOwner, refreshLockUntil" in store["UpdateExpression"]
     assert store["ConditionExpression"] == "refreshLockOwner = :owner"
     assert store["ExpressionAttributeValues"] == {
-        ":owner": "owner-1", ":a": NEW_ACCESS, ":r": NEW_REFRESH, ":e": NOW + 3600,
+        ":owner": "owner-1", ":access_token": NEW_ACCESS, ":refresh_token": NEW_REFRESH, ":e": NOW + 3600,
         ":iso": "2023-11-14T23:13:20Z", ":u": NOW}
 
 
@@ -402,7 +402,7 @@ def test_tc21_refresh_keeps_old_refresh_token_when_not_rotated(table, clock, own
     DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
     # Assert
-    assert table.update_item.call_args_list[1].kwargs["ExpressionAttributeValues"][":r"] == REFRESH
+    assert table.update_item.call_args_list[1].kwargs["ExpressionAttributeValues"][":refresh_token"] == REFRESH
 
 
 def test_tc22_already_refreshed_token_skips_atlassian(table, clock, owner, urlopen):
@@ -511,7 +511,7 @@ def test_tc30_incomplete_token_response_stores_nothing(table, clock, owner, urlo
     # Act & Assert
     with pytest.raises(RuntimeError, match="missing access_token or expires_in"):
         DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
-    stored = [c for c in table.update_item.call_args_list if ":a" in c.kwargs.get("ExpressionAttributeValues", {})]
+    stored = [c for c in table.update_item.call_args_list if ":access_token" in c.kwargs.get("ExpressionAttributeValues", {})]
     assert stored == []
     assert len(release_calls(table)) == 1
 

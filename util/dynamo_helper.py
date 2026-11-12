@@ -14,9 +14,13 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from util.config import get_secret
+from util.field_crypto import seal, unseal
 from util.constant import ATLASSIAN_AUTHORIZE_URL, ATLASSIAN_TOKEN_URL, OAUTH_SCOPES
 
 logger = logging.getLogger(__name__)
+
+# Logical table name used in the KMS encryption context of the stored tokens.
+CONNECTIONS_TABLE = "jira-connections"
 
 # Atlassian token errors meaning the stored refresh token can never work again.
 REVOKED_GRANT_ERRORS = {"invalid_grant", "unauthorized_client", "access_denied"}
@@ -222,7 +226,8 @@ class DynamoHelper:
             raise RuntimeError("Jira account is not connected for this Slack user")
         if self.normalize_expiry(user.get("accessTokenExpiresAt")) <= int(time.time()) + 60:
             user = self.refresh_access_token(team_id, slack_user_id)
-        access_token = user.get("accessToken")
+        access_token = unseal(user.get("accessToken"), CONNECTIONS_TABLE, "accessToken",
+                              team_id=team_id, slack_user_id=slack_user_id)
         cloud_id = user.get("jiraCloudId")
         if not access_token or not cloud_id:
             raise RuntimeError("Jira OAuth record is missing access token or cloud ID")
@@ -278,7 +283,8 @@ class DynamoHelper:
             user = self._read_user(table, team_id, slack_user_id)
             if self.normalize_expiry(user.get("accessTokenExpiresAt")) > int(time.time()) + 60:
                 return user
-            refresh_token = user.get("refreshToken")
+            refresh_token = unseal(user.get("refreshToken"), CONNECTIONS_TABLE, "refreshToken",
+                                   team_id=team_id, slack_user_id=slack_user_id)
             if not refresh_token:
                 raise RuntimeError("Jira refresh token is missing; reconnect the Jira account")
             payload = {
@@ -307,11 +313,16 @@ class DynamoHelper:
             expires_at = int(time.time()) + int(expires_in)
             table.update_item(
                 Key=user_key(team_id, slack_user_id),
-                UpdateExpression=("SET accessToken=:a, refreshToken=:r, accessTokenExpiresAt=:e, "
+                UpdateExpression=("SET accessToken=:access_token, refreshToken=:refresh_token, accessTokenExpiresAt=:e, "
                                   "accessTokenExpiresAtIso=:iso, updatedAt=:u REMOVE refreshLockOwner, refreshLockUntil"),
                 ConditionExpression="refreshLockOwner = :owner",
-                ExpressionAttributeValues={":owner": owner, ":a": access, ":r": rotated,
-                                           ":e": expires_at, ":iso": self._iso(expires_at), ":u": int(time.time())},
+                ExpressionAttributeValues={
+                    ":owner": owner,
+                    ":access_token": seal(access, CONNECTIONS_TABLE, "accessToken",
+                                          team_id=team_id, slack_user_id=slack_user_id),
+                    ":refresh_token": seal(rotated, CONNECTIONS_TABLE, "refreshToken",
+                                           team_id=team_id, slack_user_id=slack_user_id),
+                    ":e": expires_at, ":iso": self._iso(expires_at), ":u": int(time.time())},
             )
             return self._read_user(table, team_id, slack_user_id)
         except Exception:

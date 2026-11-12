@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 
 from util.config import get_secret
 from util.common import json_response, slack_escape
-from util.dynamo_helper import DynamoHelper
+from util.dynamo_helper import CONNECTIONS_TABLE, DynamoHelper
+from util.field_crypto import seal
 from util.constant import ATLASSIAN_TOKEN_URL, ATLASSIAN_RESOURCES_URL
 from util.timezone import valid_timezone_name
 from slack.slack_client import slack_user_timezone
@@ -84,7 +85,10 @@ class AuthenticationJira:
             now=int(time.time()); expires=now+int(token.get("expires_in",3600))
             record={"team_id":team_id,"slack_user_id":slack_user_id,"jiraAccountId":myself.get("accountId",""),
                     "jiraCloudId":site["id"],"jiraSiteUrl":site["url"].rstrip("/"),
-                    "jiraSiteName":site.get("name",""),"accessToken":access,"refreshToken":refresh,
+                    "jiraSiteName":site.get("name",""),
+                    # Tokens are stored encrypted (KMS, bound to this row by the encryption context).
+                    "accessToken":seal(access,CONNECTIONS_TABLE,"accessToken",team_id=team_id,slack_user_id=slack_user_id),
+                    "refreshToken":seal(refresh,CONNECTIONS_TABLE,"refreshToken",team_id=team_id,slack_user_id=slack_user_id),
                     "accessTokenExpiresAt":expires,
                     "accessTokenExpiresAtIso":datetime.fromtimestamp(expires,tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "scope":token.get("scope",""),"connected":True,"connectedAt":now,"updatedAt":now}
