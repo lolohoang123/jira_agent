@@ -281,6 +281,10 @@ Resources:
           APPROVAL_DELIVERY: !Ref ApprovalDelivery
           APPROVAL_RETENTION_DAYS: !Ref ApprovalRetentionDays
           AGENT_ENABLED: !Ref AgentEnabled
+          # Field-level encryption of stored tokens (util/field_crypto.py); key from the bootstrap stack.
+          FIELD_ENCRYPTION: kms
+          FIELD_ENCRYPTION_KEY_ARN:
+            Fn::ImportValue: !Sub jira-agent-${Stage}-data-key-arn
           AGENT_RATE_LIMIT_PER_HOUR: !Ref AgentRateLimitPerHour
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref OAuthStatesTable }
@@ -307,6 +311,14 @@ Resources:
               Resource:
                 - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-${Stage}
                 - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-${Stage}:*
+            - Sid: FieldEncryption
+              Effect: Allow
+              Action: [kms:Encrypt, kms:Decrypt]
+              Resource:
+                Fn::ImportValue: !Sub jira-agent-${Stage}-data-key-arn
+              Condition:
+                StringEquals:
+                  kms:EncryptionContext:app: jira-agent
             - Sid: BedrockConverse
               Effect: Allow
               Action: bedrock:InvokeModel

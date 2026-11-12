@@ -29,6 +29,7 @@ A Slack bot (`/jira-agent`) that lets users connect Jira via Atlassian OAuth 2.0
 - Only the Slack user who created an approval may approve/reject it.
 - Never log OAuth tokens, Slack request bodies, or worklog descriptions.
 - Read secrets only via `util/config.get_secret` (SSM Parameter Store in AWS, env vars locally); never `os.environ` for them.
+- Tokens stored in DynamoDB (`accessToken`, `refreshToken`, `bot_token`) are written only through `util/field_crypto.seal` and read through `unseal`, with the row's ids in the encryption context. Never store a token in plaintext and never fall back to plaintext when KMS fails (guardrail G10).
 - Verify Slack signatures (`slack/slack_security.py`) on every Slack request; async self-invocations are authenticated with `ASYNC_TASK_SECRET`.
 - Slack must get an ACK within 3 seconds: slow work (Bedrock, Jira calls) runs via async self-invoke (`util/lambda_invoke.py`).
 

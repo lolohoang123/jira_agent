@@ -108,6 +108,8 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 | `AGENT_ENABLED` | `false` disables the natural-language assistant (Bedrock); unset = enabled (local/tests). Deployed stacks currently set `false` |
 | `AGENT_RATE_LIMIT_PER_HOUR` | Optional, default `20`. `0` disables the limit |
 
+> **Field-level encryption:** OAuth access/refresh tokens and Slack bot tokens are encrypted with KMS before they are written (`util/field_crypto.py`, `FIELD_ENCRYPTION=kms`, one customer managed key per stage created by `infra/github-oidc-bootstrap.yaml`, automatic rotation). The encryption context binds each ciphertext to its workspace, user and field, so a value copied to another row cannot be decrypted, and every decryption is in CloudTrail. Rows written before encryption are still readable; `scripts/encrypt_existing_secrets.py` encrypts them.
+
 > Secrets (`SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET`, `ATLASSIAN_CLIENT_SECRET`, `ASYNC_TASK_SECRET`; bot tokens are per workspace in the installations table) are read only through `util/config.get_secret`: from SSM Parameter Store in AWS (`/jira-agent/<stage>/slack-signing-secret`, ...), from the environment locally. Guardrail G9 fails the build if code reads them from `os.environ`.
 
 ### IAM – Lambda execution role (least privilege)

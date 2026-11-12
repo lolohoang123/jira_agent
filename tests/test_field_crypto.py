@@ -26,9 +26,11 @@ class FakeKms:
         self.encrypt_calls = 0
         self.decrypt_calls = 0
         self.fail = None
+        self.failed_attempts = 0
 
     def encrypt(self, KeyId, Plaintext, EncryptionContext):
         if self.fail:
+            self.failed_attempts += 1
             raise self.fail
         self.encrypt_calls += 1
         blob = f"blob-{len(self.blobs)}".encode()
@@ -52,6 +54,9 @@ def kms(monkeypatch):
     field_crypto.set_kms_client(fake)
     monkeypatch.setenv("FIELD_ENCRYPTION", "kms")
     monkeypatch.setenv("FIELD_ENCRYPTION_KEY_ARN", KEY)
+    monkeypatch.setenv("ATLASSIAN_CLIENT_ID", "client-id")
+    monkeypatch.setenv("ATLASSIAN_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("ATLASSIAN_REDIRECT_URI", "https://api.example.com/oauth/callback")
     yield fake
     field_crypto.set_kms_client(None)
 
@@ -296,7 +301,8 @@ def test_oauth_callback_fails_closed_when_kms_fails(kms):
         # Act
         page = auth.AuthenticationJira({"queryStringParameters": {"code": "c", "state": "s"}}).finish_oauth_callback()
 
-    # Assert: nothing stored, generic error page
+    # Assert: the failure came from KMS; nothing stored, generic error page
+    assert kms.failed_attempts == 1
     assert page["statusCode"] == 500
     helpers["OAUTH_USERS_TABLE"].oauth_table.return_value.put_item.assert_not_called()
 

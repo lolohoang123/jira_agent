@@ -29,6 +29,9 @@ FORBIDDEN_HTTP_LIBS = {"requests", "httpx", "aiohttp", "urllib3"}
 SECRET_NAMES = {"SLACK_SIGNING_SECRET", "SLACK_CLIENT_SECRET", "SLACK_BOT_TOKEN", "ATLASSIAN_CLIENT_SECRET",
                 "ASYNC_TASK_SECRET"}
 SECRET_LOADER = "util/config.py"
+# DynamoDB attributes / update placeholders that hold tokens: their values must be seal(...) calls.
+STORED_SECRET_KEYS = {"accessToken", "refreshToken", "bot_token", ":access_token", ":refresh_token"}
+SEALING_STORAGE_APIS = {"save"}  # InstallationStore.save seals the bot token itself
 
 
 @dataclass
@@ -67,6 +70,7 @@ class Checker:
             self.g6_dynamodb_wire_format(path, tree, src)
             self.g7_http_timeouts(path, tree)
             self.g9_secrets_from_parameter_store(path, tree)
+            self.g10_stored_secrets_are_sealed(path, tree)
         self.g4_entry_authentication()
         self.g5_owner_bound_claim()
         self.g8_dependencies()
@@ -231,6 +235,24 @@ class Checker:
                          f"`{name}` read from the environment; use util.config.get_secret (SSM Parameter Store)")
 
 
+    def g10_stored_secrets_are_sealed(self, path, tree):
+        """Tokens are written to DynamoDB only as KMS ciphertext (util.field_crypto.seal).
+
+        Dicts passed straight to a sealing storage API (InstallationStore.save, which seals internally) are input,
+        not storage, and are skipped.
+        """
+        handed_to_sealing_api = {id(arg) for call in ast.walk(tree) if isinstance(call, ast.Call)
+                                 and _call_name(call) in SEALING_STORAGE_APIS for arg in call.args}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict) or id(node) in handed_to_sealing_api:
+                continue
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value in STORED_SECRET_KEYS:
+                    if not (isinstance(value, ast.Call) and _call_name(value) == "seal"):
+                        self.add("G10", "ERROR", path, node.lineno,
+                                 f"`{key.value}` stored without util.field_crypto.seal(): plaintext token in DynamoDB")
+
+
 # ---------------------------------------------------------------------- helpers
 def _is_environ(node: ast.AST) -> bool:
     return isinstance(node, ast.Attribute) and node.attr == "environ"
@@ -301,7 +323,7 @@ def main() -> int:
         for f in findings:
             print(f"- [{f.level}] {f.rule} {f.path}:{f.line}  {f.message}")
         if not findings:
-            print("- [OK] All guardrails G1-G9 pass.")
+            print("- [OK] All guardrails G1-G10 pass.")
     return 1 if errors else 0
 
 

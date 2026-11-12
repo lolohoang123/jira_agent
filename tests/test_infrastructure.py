@@ -321,3 +321,47 @@ def test_slack_oauth_urls_come_from_this_api(template, function):
     outputs = template["Outputs"]
     assert outputs["SlackRedirectUrl"]["Value"] == {"Sub": f"{base}/slack/oauth/callback"}
     assert outputs["SlackEventsUrl"]["Value"] == {"Sub": f"{base}/slack/events"}
+
+
+# --------------------------------------------------------------------------------------
+# Field encryption keys (bootstrap) and their use (app template)
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stage", ["Staging", "Prod"])
+def test_data_keys_rotate_are_retained_and_exported(bootstrap, stage):
+    # Arrange
+    resources = bootstrap["Resources"]
+    key = resources[f"{stage}DataKey"]
+
+    # Assert: deleting the bootstrap stack must never destroy the key (stored tokens would become unreadable)
+    assert key["Type"] == "AWS::KMS::Key"
+    assert key["Properties"]["EnableKeyRotation"] is True
+    assert key["DeletionPolicy"] == "Retain" and key["UpdateReplacePolicy"] == "Retain"
+    assert resources[f"{stage}DataKeyAlias"]["Properties"]["AliasName"] == f"alias/jira-agent-{stage.lower()}-data"
+    output = bootstrap["Outputs"][f"{stage}DataKeyArn"]
+    assert output["Export"]["Name"] == f"jira-agent-{stage.lower()}-data-key-arn"
+
+
+def test_boundary_allows_field_encryption_only_for_this_app(bootstrap):
+    # Arrange
+    statements = bootstrap["Resources"]["FunctionPermissionsBoundary"]["Properties"]["PolicyDocument"]["Statement"]
+    [field] = [s for s in statements if s["Sid"] == "FieldEncryption"]
+
+    # Assert
+    assert field["Action"] == ["kms:Encrypt", "kms:Decrypt"]
+    assert field["Condition"] == {"StringEquals": {"kms:EncryptionContext:app": "jira-agent"}}
+    assert field["Resource"] == [{"GetAtt": "StagingDataKey.Arn"}, {"GetAtt": "ProdDataKey.Arn"}]
+
+
+def test_function_encrypts_fields_with_the_imported_stage_key(function):
+    # Arrange
+    variables = function["Environment"]["Variables"]
+    statements = [s for p in function["Policies"] if "Statement" in p for s in p["Statement"] if isinstance(s, dict)]
+    [field] = [s for s in statements if s.get("Sid") == "FieldEncryption"]
+    imported = {"Fn::ImportValue": {"Sub": "jira-agent-${Stage}-data-key-arn"}}
+
+    # Assert
+    assert variables["FIELD_ENCRYPTION"] == "kms"
+    assert variables["FIELD_ENCRYPTION_KEY_ARN"] == imported
+    assert field["Action"] == ["kms:Encrypt", "kms:Decrypt"] and field["Resource"] == imported
+    assert field["Condition"] == {"StringEquals": {"kms:EncryptionContext:app": "jira-agent"}}

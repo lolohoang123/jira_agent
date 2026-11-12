@@ -88,6 +88,65 @@ Resources:
             Effect: Allow
             Action: [sqs:SendMessage, sqs:GetQueueAttributes]
             Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:jira-agent-*
+          - Sid: FieldEncryption
+            Effect: Allow
+            Action: [kms:Encrypt, kms:Decrypt]
+            Resource:
+              - !GetAtt StagingDataKey.Arn
+              - !GetAtt ProdDataKey.Arn
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:app: jira-agent
+
+  StagingDataKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: jira-agent staging - field-level encryption of OAuth tokens and Slack bot tokens in DynamoDB.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Standard statement: the account manages the key and IAM policies decide who may use it
+          # (the function roles through jira-agent-function-boundary).
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+
+  StagingDataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/jira-agent-staging-data
+      TargetKeyId: !Ref StagingDataKey
+
+  ProdDataKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: jira-agent prod - field-level encryption of OAuth tokens and Slack bot tokens in DynamoDB.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Standard statement: the account manages the key and IAM policies decide who may use it
+          # (the function roles through jira-agent-function-boundary).
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+
+  ProdDataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/jira-agent-prod-data
+      TargetKeyId: !Ref ProdDataKey
 
   StagingDeployRole:
     Type: AWS::IAM::Role
@@ -391,3 +450,13 @@ Outputs:
   FunctionPermissionsBoundaryArn:
     Description: Passed to the app stack as PermissionsBoundaryArn
     Value: !Ref FunctionPermissionsBoundary
+  StagingDataKeyArn:
+    Description: Field encryption key of the staging stack (imported by template.yaml)
+    Value: !GetAtt StagingDataKey.Arn
+    Export:
+      Name: jira-agent-staging-data-key-arn
+  ProdDataKeyArn:
+    Description: Field encryption key of the prod stack (imported by template.yaml)
+    Value: !GetAtt ProdDataKey.Arn
+    Export:
+      Name: jira-agent-prod-data-key-arn

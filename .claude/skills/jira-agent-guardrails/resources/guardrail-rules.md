@@ -1,4 +1,4 @@
-# Guardrail rules (G1–G9)
+# Guardrail rules (G1–G10)
 
 Each rule maps to a CLAUDE.md non-negotiable rule or to a real defect found in this repo.
 `ERROR` fails the check (exit 1); `WARN` is reported only.
@@ -14,6 +14,7 @@ Each rule maps to a CLAUDE.md non-negotiable rule or to a real defect found in t
 | G7 | ERROR | `urlopen(...)` without `timeout=` | Slack needs an ACK in 3 s and async tasks have a Lambda timeout; a hung call blocks both | Add `timeout=` (Slack 8 s, Jira/Atlassian 15–20 s) |
 | G8 | ERROR / WARN | ERROR: importing `requests`, `httpx`, `aiohttp`, `urllib3`, or a `_backup_*` module. WARN: runtime dependency other than `boto3` in `requirements.txt` | Runtime dependencies are stdlib + `boto3`; backups are stale snapshots | Use `urllib.request`; put test-only packages in a separate test requirements file |
 | G9 | ERROR | `os.environ[...]`, `os.environ.get(...)` or `os.getenv(...)` of `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `ATLASSIAN_CLIENT_SECRET` or `ASYNC_TASK_SECRET` outside `util/config.py` | Secrets live in SSM Parameter Store (`/jira-agent/<stage>/`); reading the environment would bypass it and invite plaintext secrets in Lambda configuration | `from util.config import get_secret`; `get_secret("SLACK_BOT_TOKEN")` |
+| G10 | ERROR | A dict literal storing `accessToken`, `refreshToken`, `bot_token` (or the update placeholders `:access_token`, `:refresh_token`) whose value is not a `seal(...)` call | Tokens are stored only as KMS ciphertext bound to their row (encryption context); a plaintext write would undo field-level encryption | `seal(value, CONNECTIONS_TABLE, "accessToken", team_id=..., slack_user_id=...)` from `util.field_crypto` |
 
 ## Known limits (static analysis)
 

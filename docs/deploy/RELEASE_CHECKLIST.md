@@ -71,6 +71,26 @@ for a private one**.
 4. CI (`ci.yml`) runs tests, guardrails and `cfn-lint` on every PR. Deploy (`deploy.yml`): every push to `main`
    deploys `staging`; `prod` via **Actions → Deploy → Run workflow → stage: prod**, which waits for a reviewer.
 
+## 2c. Field encryption keys (KMS)
+
+Order matters: the app stack imports the key ARN, so the bootstrap must be updated **before** the app is deployed.
+
+1. Update the bootstrap with an administrator MFA session (creates `alias/jira-agent-staging-data` and
+   `alias/jira-agent-prod-data`, rotation on, `Retain`, and lets the function boundary use them):
+   ```bash
+   aws cloudformation deploy --profile mfa --stack-name jira-agent-github-bootstrap \
+     --template-file infra/github-oidc-bootstrap.yaml --capabilities CAPABILITY_NAMED_IAM
+   ```
+2. Deploy the app (push to `main`). The function now has `FIELD_ENCRYPTION=kms` and encrypts every token it writes.
+3. Encrypt the tokens written before encryption (dry run first, counts only):
+   ```bash
+   python scripts/encrypt_existing_secrets.py --stage staging --profile mfa
+   python scripts/encrypt_existing_secrets.py --stage staging --profile mfa --apply
+   ```
+   Run the dry run again: `plaintext=0` for both tables.
+4. Never delete or disable the key: the stored tokens would become unreadable (users would have to reconnect and
+   workspaces reinstall).
+
 ## 3. First deploy
 
 ```bash
@@ -140,6 +160,10 @@ console if a step looks different.
 | 9 | CloudWatch | No errors; logs contain no tokens or descriptions; alarms in OK state |
 
 ## 7. Data retention (GAP-04)
+
+Tokens in `jira-connections` and `installations` are stored as KMS ciphertext (`{"v": 1, "kid", "ct"}`), not
+readable from the console, exports or backups without `kms:Decrypt` on the stage key and the row's encryption
+context.
 
 | Data | Where | Kept until |
 |---|---|---|

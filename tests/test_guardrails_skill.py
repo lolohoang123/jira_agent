@@ -99,6 +99,10 @@ def test_real_repo_reports_the_unapproved_write_path():
      "def bad(req):\n    return urllib.request.urlopen(req)", "G7"),
     # G8: third-party HTTP client
     ("jira/jira_client.py", "import requests", "G8"),
+    # G10: token stored without field encryption
+    ("jira/authentication_jira.py", "def bad(table, t):\n    table.put_item(Item={'accessToken': t})", "G10"),
+    ("slack/installation_store.py", "def bad(table, t):\n    table.put_item(Item={'bot_token': t})", "G10"),
+    ("util/dynamo_helper.py", "def bad(t):\n    return {':refresh_token': t}", "G10"),
     # G9: secret read from the environment instead of SSM
     ("slack/slack_client.py", "def bad():\n    return os.environ['SLACK_BOT_TOKEN']", "G9"),
     ("handlers/slack_command_handler.py", "def bad():\n    return os.environ.get('ASYNC_TASK_SECRET')", "G9"),
