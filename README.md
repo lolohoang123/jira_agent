@@ -1,7 +1,8 @@
 # Jira Slack Agent – modular MVP
 
 ## Current features
-- `/jira-agent connect`: Atlassian OAuth 2.0 (3LO); the connection is stored per `slack_user_id`.
+- **Multi-workspace (Slack OAuth v2):** each Slack workspace installs the app through the "Add to Slack" link (`GET /slack/install` → `GET /slack/oauth/callback`); its bot token is stored per `team_id` in the installations table. Org-wide Enterprise Grid installs are refused. `app_uninstalled` deletes the workspace's installation, every Jira connection and its pending approvals; `tokens_revoked` (bot) deletes the installation (`POST /slack/events`).
+- `/jira-agent connect`: Atlassian OAuth 2.0 (3LO); the connection is stored per (`team_id`, `slack_user_id`).
 - `/jira-agent disconnect`: deletes the user's Jira connection and stored tokens. Tokens are also deleted automatically when Atlassian rejects the refresh token (`invalid_grant`).
 - `/jira-agent list`: tickets assigned to the Jira account linked to the Slack user, total worklog time per ticket, and a Log Time button.
 - `/jira-agent logwork today`: worklogs for the current day in the configured timezone, with total time and a Log Time button.
@@ -76,7 +77,8 @@ flowchart LR
 | Lambda function | Python 3.12 runtime, handler `functions.read_jira_lambda.lambda_handler`, 512 MB memory, 30–60 s timeout | Handles all requests and async tasks |
 | API Gateway (HTTP API or REST API) | Route `ANY /` or `POST /` for Slack, `GET /oauth/callback` for Atlassian; Lambda proxy integration | Public endpoint for Slack and Atlassian |
 | DynamoDB `OAUTH_STATES_TABLE` | PK `state` (String), on-demand, **TTL enabled on attribute `expiresAt`** | OAuth state for CSRF protection (single-use, 10-minute lifetime) |
-| DynamoDB `OAUTH_USERS_TABLE` | PK `slack_user_id` (String), on-demand | Access/refresh tokens, `jiraSiteUrl`, and cloud id per Slack user |
+| DynamoDB `OAUTH_USERS_TABLE` (`jira-agent-<stage>-jira-connections`) | PK `team_id`, SK `slack_user_id` (String), on-demand | Access/refresh tokens, `jiraSiteUrl`, and cloud id per Slack user in a workspace |
+| DynamoDB `INSTALLATIONS_TABLE` (`jira-agent-<stage>-installations`) | PK `team_id` (String), on-demand | Bot token and metadata of each Slack workspace that installed the app |
 | DynamoDB `APPROVALS_TABLE` | PK `approval_id` (String), on-demand, **TTL enabled on attribute `ttl`** | Approval requests (`PENDING`/`EXECUTING`/...) |
 | Amazon Bedrock | Model or inference profile via `BEDROCK_MODEL_ID`, region `BEDROCK_REGION` | Parses natural-language commands into a JSON plan |
 | CloudWatch Logs | 14–30 day retention | Operational logs; **do not log tokens, Slack bodies, or worklog descriptions** |
@@ -89,7 +91,11 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 | Variable | Meaning |
 |---|---|
 | `OAUTH_STATES_TABLE` | DynamoDB table name for OAuth state |
-| `OAUTH_USERS_TABLE` | DynamoDB table name for per-Slack-user connections |
+| `OAUTH_USERS_TABLE` | DynamoDB table of Jira connections, keyed by (`team_id`, `slack_user_id`) |
+| `INSTALLATIONS_TABLE` | DynamoDB table of Slack installations (bot token per `team_id`) |
+| `SLACK_CLIENT_ID` | Slack app client id (not secret) |
+| `SLACK_REDIRECT_URI` / `SLACK_INSTALL_URL` | `<API>/slack/oauth/callback` and `<API>/slack/install` (set by the template) |
+| `SLACK_APP_ID` | Optional; events for any other app id are ignored |
 | `APPROVALS_TABLE` | DynamoDB table name for approvals (also holds short-lived `dedupe#…` rows that block identical requests for 24 h) |
 | `APPROVAL_RETENTION_DAYS` | Optional, default `90`. How long finished approvals (approved, rejected, failed, cancelled) are kept as an audit trail before TTL deletes them |
 | `MAX_WORKLOG_MINUTES` | Optional, default `1440` (24h). Largest duration a single worklog may have; `1d` = 8h and `1w` = 5d, as in Jira's defaults |
@@ -102,7 +108,7 @@ The full list is in `.env.example`. The variables directly related to infrastruc
 | `AGENT_ENABLED` | `false` disables the natural-language assistant (Bedrock); unset = enabled (local/tests). Deployed stacks currently set `false` |
 | `AGENT_RATE_LIMIT_PER_HOUR` | Optional, default `20`. `0` disables the limit |
 
-> Secrets (`SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `ATLASSIAN_CLIENT_SECRET`, `ASYNC_TASK_SECRET`) are read only through `util/config.get_secret`: from SSM Parameter Store in AWS (`/jira-agent/<stage>/slack-signing-secret`, ...), from the environment locally. Guardrail G9 fails the build if code reads them from `os.environ`.
+> Secrets (`SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET`, `ATLASSIAN_CLIENT_SECRET`, `ASYNC_TASK_SECRET`; bot tokens are per workspace in the installations table) are read only through `util/config.get_secret`: from SSM Parameter Store in AWS (`/jira-agent/<stage>/slack-signing-secret`, ...), from the environment locally. Guardrail G9 fails the build if code reads them from `os.environ`.
 
 ### IAM – Lambda execution role (least privilege)
 Replace the placeholders `<REGION>`, `<ACCOUNT_ID>`, `<FUNCTION_NAME>`, and `<MODEL_ARN_OR_PROFILE_ARN>`:

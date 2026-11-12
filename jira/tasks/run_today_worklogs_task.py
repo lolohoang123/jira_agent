@@ -12,7 +12,7 @@ class RunTodayWorklogsTask:
     def run(self):
         url=self.event["response_url"]
         try:
-            service=JiraService(self.event["slack_user_id"])
+            service=JiraService(self.event["team_id"],self.event["slack_user_id"])
             day,entries=service.fetch_today_worklogs(self.event["account_id"])
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,
                 "text":f"Jira Worklogs — {day:%d/%m/%Y}",

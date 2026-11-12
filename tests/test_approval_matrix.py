@@ -130,16 +130,16 @@ def test_tc04_init_with_local_endpoint_passes_local_kwargs(monkeypatch):
 
 def test_tc05_create_pending_default_ttl_writes_pending_item(repo, table):
     # Arrange
-    approval = {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM}
+    approval = {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM}
 
     with patch.object(repo_module.uuid, "uuid4", return_value=APPROVAL_ID):
         # Act
         item = repo.create_pending(approval)
 
     # Assert
-    dedupe_key = repo_module.build_dedupe_key(OWNER, FORM)
+    dedupe_key = repo_module.build_dedupe_key("T1", OWNER, FORM)
     assert item == {
-        "approval_id": APPROVAL_ID, "slack_user_id": OWNER, "channel_id": "C1",
+        "approval_id": APPROVAL_ID, "team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1",
         "action": "create_worklog", "form": FORM, "status": "PENDING", "dedupe_key": dedupe_key,
         "created_at": NOW, "expires_at": NOW + 86400, "ttl": NOW + 86400,
     }
@@ -159,7 +159,7 @@ def test_tc05_create_pending_default_ttl_writes_pending_item(repo, table):
 
 def test_tc06_create_pending_zero_ttl_expires_immediately(repo):
     # Arrange
-    approval = {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM}
+    approval = {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM}
 
     # Act
     item = repo.create_pending(approval, ttl_seconds=0)
@@ -170,7 +170,7 @@ def test_tc06_create_pending_zero_ttl_expires_immediately(repo):
 
 def test_tc07_create_pending_missing_form_raises_without_write(repo, table):
     # Arrange
-    approval = {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog"}
+    approval = {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog"}
 
     # Act & Assert
     with pytest.raises(KeyError, match="form"):
@@ -212,7 +212,7 @@ def test_owner_transition_from_pending_returns_attributes(
     table.update_item.return_value = {"Attributes": attributes}
 
     # Act
-    result = getattr(repo, method)(APPROVAL_ID, OWNER)
+    result = getattr(repo, method)(APPROVAL_ID, "T1", OWNER)
 
     # Assert
     assert result == attributes
@@ -220,9 +220,9 @@ def test_owner_transition_from_pending_returns_attributes(
     assert kwargs["Key"] == {"approval_id": APPROVAL_ID}
     assert kwargs["UpdateExpression"] == f"SET #s = :new_status, {timestamp_field} = :now, #ttl = :ttl"
     assert kwargs["ConditionExpression"] == (
-        "#s = :pending AND slack_user_id = :owner AND expires_at > :now")
+        "#s = :pending AND slack_user_id = :owner AND team_id = :team AND expires_at > :now")
     assert kwargs["ExpressionAttributeValues"] == {
-        ":new_status": new_status, ":pending": "PENDING", ":owner": OWNER, ":now": NOW,
+        ":new_status": new_status, ":pending": "PENDING", ":owner": OWNER, ":team": "T1", ":now": NOW,
         ":ttl": NOW + RETENTION}
     assert kwargs["ReturnValues"] == "ALL_NEW"
 
@@ -233,7 +233,7 @@ def test_conditional_check_failure_returns_none(repo, table, tc_id, method):
     table.update_item.side_effect = client_error("ConditionalCheckFailedException")
 
     # Act
-    result = getattr(repo, method)(APPROVAL_ID, "U_INTRUDER")
+    result = getattr(repo, method)(APPROVAL_ID, "T1", "U_INTRUDER")
 
     # Assert
     assert result is None
@@ -248,7 +248,7 @@ def test_other_client_errors_are_reraised(repo, table, tc_id, method):
 
     # Act & Assert
     with pytest.raises(ClientError) as exc_info:
-        getattr(repo, method)(APPROVAL_ID, OWNER)
+        getattr(repo, method)(APPROVAL_ID, "T1", OWNER)
     assert exc_info.value is error
 
 
@@ -313,14 +313,15 @@ def test_tc20_request_creates_pending_and_posts_buttons(fake_repo, slack_api):
     service = ApprovalService(fake_repo)
 
     # Act
-    item = service.request_worklog_approval(OWNER, "C1", FORM)
+    item = service.request_worklog_approval("T1", OWNER, "C1", FORM)
 
     # Assert
     assert item["approval_id"] == APPROVAL_ID
     fake_repo.create_pending.assert_called_once_with(
-        {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM,
+        {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM,
          "jira_cloud_id": "cloud-test"})
-    method, payload = slack_api.call_args.args
+    method, payload, team_id = slack_api.call_args.args
+    assert team_id == "T1"  # sent with the bot token of the requester's workspace
     assert method == "chat.postMessage"
     assert payload["channel"] == OWNER  # default APPROVAL_DELIVERY=dm: private to the requester
     assert payload["text"] == "Approval required: log 1h 30m to PROJ-1"
@@ -337,7 +338,7 @@ def test_tc21_request_escapes_slack_markup(fake_repo, slack_api):
     service = ApprovalService(fake_repo)
 
     # Act
-    service.request_worklog_approval(OWNER, "C1", form)
+    service.request_worklog_approval("T1", OWNER, "C1", form)
 
     # Assert
     payload = slack_api.call_args.args[1]
@@ -355,7 +356,7 @@ def test_tc22_request_without_description_shows_placeholder(fake_repo, slack_api
     service = ApprovalService(fake_repo)
 
     # Act
-    service.request_worklog_approval(OWNER, "C1", {**FORM, "description": description})
+    service.request_worklog_approval("T1", OWNER, "C1", {**FORM, "description": description})
 
     # Assert
     body = slack_api.call_args.args[1]["blocks"][0]["text"]["text"]
@@ -369,7 +370,7 @@ def test_tc23_request_does_not_post_when_create_pending_fails(fake_repo, slack_a
 
     # Act & Assert
     with pytest.raises(ClientError):
-        service.request_worklog_approval(OWNER, "C1", FORM)
+        service.request_worklog_approval("T1", OWNER, "C1", FORM)
     slack_api.assert_not_called()
 
 
@@ -381,12 +382,12 @@ def test_tc24_approve_executes_worklog_and_marks_executed(fake_repo, jira_servic
     service = ApprovalService(fake_repo)
 
     # Act
-    result = service.approve_and_execute(APPROVAL_ID, OWNER)
+    result = service.approve_and_execute("T1", APPROVAL_ID, OWNER)
 
     # Assert
     assert result == {"ok": True, "result": {"id": "10001"}, "item": item}
-    fake_repo.claim.assert_called_once_with(APPROVAL_ID, OWNER)
-    jira_service.assert_called_once_with(OWNER)
+    fake_repo.claim.assert_called_once_with(APPROVAL_ID, "T1", OWNER)
+    jira_service.assert_called_once_with("T1", OWNER)
     jira_service.return_value.create_worklog.assert_called_once_with(item["form"])
     fake_repo.finish.assert_called_once_with(APPROVAL_ID, "APPROVED_EXECUTED")
 
@@ -397,7 +398,7 @@ def test_tc25_approve_unclaimable_returns_not_ok_without_side_effects(fake_repo,
     service = ApprovalService(fake_repo)
 
     # Act
-    result = service.approve_and_execute(APPROVAL_ID, "U_INTRUDER")
+    result = service.approve_and_execute("T1", APPROVAL_ID, "U_INTRUDER")
 
     # Assert
     assert result == {"ok": False, "message":
@@ -413,7 +414,7 @@ def test_tc26_approve_unsupported_action_fails_without_jira(fake_repo, jira_serv
 
     # Act & Assert
     with pytest.raises(ValueError, match="Unsupported approved action") as exc_info:
-        service.approve_and_execute(APPROVAL_ID, OWNER)
+        service.approve_and_execute("T1", APPROVAL_ID, OWNER)
     jira_service.assert_not_called()
     fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=exc_info.value,
                                              release=True)
@@ -428,7 +429,7 @@ def test_tc27_approve_jira_failure_marks_failed_and_reraises(fake_repo, jira_ser
 
     # Act & Assert
     with pytest.raises(RuntimeError) as exc_info:
-        service.approve_and_execute(APPROVAL_ID, OWNER)
+        service.approve_and_execute("T1", APPROVAL_ID, OWNER)
     assert exc_info.value is jira_error
     fake_repo.finish.assert_called_once_with(APPROVAL_ID, "EXECUTION_FAILED", error=jira_error, release=True)
 
@@ -444,7 +445,7 @@ def test_tc28_approve_keeps_jira_error_when_finish_also_fails(fake_repo, jira_se
     # Act & Assert
     with caplog.at_level(logging.ERROR, logger="approval.approval_service"):
         with pytest.raises(RuntimeError) as exc_info:
-            service.approve_and_execute(APPROVAL_ID, OWNER)
+            service.approve_and_execute("T1", APPROVAL_ID, OWNER)
     assert exc_info.value is jira_error
     assert f"Could not mark approval {APPROVAL_ID} as EXECUTION_FAILED" in caplog.text
 
@@ -461,7 +462,7 @@ def test_tc29_finish_executed_failure_after_jira_success_marks_failed(fake_repo,
 
     # Act & Assert
     with pytest.raises(RuntimeError) as exc_info:
-        service.approve_and_execute(APPROVAL_ID, OWNER)
+        service.approve_and_execute("T1", APPROVAL_ID, OWNER)
     assert exc_info.value is ddb_error
     jira_service.return_value.create_worklog.assert_called_once()
     assert [c.args + tuple(c.kwargs.values()) for c in fake_repo.finish.call_args_list] == [
@@ -481,8 +482,8 @@ def test_reject_delegates_to_repository(fake_repo, tc_id, user, repo_result):
     service = ApprovalService(fake_repo)
 
     # Act
-    result = service.reject(APPROVAL_ID, user)
+    result = service.reject("T1", APPROVAL_ID, user)
 
     # Assert
     assert result == repo_result
-    fake_repo.reject.assert_called_once_with(APPROVAL_ID, user)
+    fake_repo.reject.assert_called_once_with(APPROVAL_ID, "T1", user)

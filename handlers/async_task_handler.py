@@ -10,24 +10,26 @@ logger=logging.getLogger(__name__)
 def _notify_approval_result(event, user_id, message, update_original):
     """Best-effort Slack notification: a Slack failure must not fail (and retry) the task."""
     from slack.slack_client import slack_api
+    team_id = event.get("team_id")
     try:
-        slack_api("chat.postEphemeral", {"channel": event["channel_id"], "user": user_id, "text": message})
+        slack_api("chat.postEphemeral", {"channel": event["channel_id"], "user": user_id, "text": message}, team_id)
     except Exception:
         logger.exception("Could not send approval result to Slack user %s", user_id)
     if update_original and event.get("message_ts"):
         try:
             slack_api("chat.update", {"channel": event["channel_id"], "ts": event["message_ts"],
                                        "text": message,
-                                       "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": message}}]})
+                                       "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": message}}]},
+                      team_id)
         except Exception:
             logger.exception("Could not update approval message for Slack user %s", user_id)
 
 
-def _notify_user_directly(user_id, message):
+def _notify_user_directly(team_id, user_id, message):
     """Best-effort DM from the bot: the original channel may be the reason delivery failed."""
     from slack.slack_client import slack_api
     try:
-        slack_api("chat.postMessage", {"channel": user_id, "text": message})
+        slack_api("chat.postMessage", {"channel": user_id, "text": message}, team_id)
     except Exception:
         logger.exception("Could not notify Slack user %s directly", user_id)
 
@@ -40,28 +42,28 @@ def handle_async_task(event):
     if task == "request_worklog_approval":
         from approval.approval_service import (ApprovalService, ApprovalDeliveryError, DuplicateApprovalError,
                                                duplicate_approval_message, undelivered_approval_message)
-        user_id = event["slack_user_id"]
+        user_id, team_id = event["slack_user_id"], event["team_id"]
         try:
-            ApprovalService().request_worklog_approval(user_id, event["channel_id"], event["form"])
+            ApprovalService().request_worklog_approval(team_id, user_id, event["channel_id"], event["form"])
         except DuplicateApprovalError:
-            _notify_user_directly(user_id, duplicate_approval_message(event["form"]))
+            _notify_user_directly(team_id, user_id, duplicate_approval_message(event["form"]))
             return json_response(409, {"error": "duplicate_approval"})
         except ApprovalDeliveryError:
-            _notify_user_directly(user_id, undelivered_approval_message(event["form"], event["channel_id"]))
+            _notify_user_directly(team_id, user_id, undelivered_approval_message(event["form"], event["channel_id"]))
             return json_response(502, {"error": "approval_not_delivered"})
         except Exception:
             logger.exception("Could not create worklog approval for Slack user %s", user_id)
-            _notify_user_directly(user_id, "⚠️ Your worklog request could not be created. Nothing was logged to Jira. "
+            _notify_user_directly(team_id, user_id, "⚠️ Your worklog request could not be created. Nothing was logged to Jira. "
                                            "Please try again.")
             return json_response(500, {"error": "approval_request_failed"})
     elif task == "handle_approval_action":
         from approval.approval_service import ApprovalService
         service = ApprovalService()
         approval_id = event["approval_id"]
-        user_id = event["slack_user_id"]
+        user_id, team_id = event["slack_user_id"], event["team_id"]
         if event["decision"] == "approve_jira_write":
             try:
-                result = service.approve_and_execute(approval_id, user_id)
+                result = service.approve_and_execute(team_id, approval_id, user_id)
             except Exception:
                 logger.exception("Approval %s could not be completed", approval_id)
                 result = {"ok": False, "message": "The approval could not be completed automatically. "
@@ -69,7 +71,7 @@ def handle_async_task(event):
             succeeded = bool(result["ok"])
             message = "✅ Jira worklog created successfully." if succeeded else f"⚠️ {result['message']}"
         else:
-            succeeded = bool(service.reject(approval_id, user_id))
+            succeeded = bool(service.reject(team_id, approval_id, user_id))
             message = "🚫 Approval rejected." if succeeded else "⚠️ This approval is expired, already handled, or does not belong to you."
         # Only a successful approve/reject may replace the original message; otherwise anyone
         # clicking the buttons could wipe the owner's Approve/Reject controls.
@@ -88,6 +90,7 @@ def handle_async_task(event):
             return json_response(200, {"ok": False, "error": "agent_disabled"})
         try:
             result = AgentOrchestrator().handle(
+                team_id=event["team_id"],
                 slack_user_id=event["slack_user_id"],
                 text=event["text"],
                 channel_id=event["channel_id"],
@@ -105,6 +108,9 @@ def handle_async_task(event):
         RunListAssignedTask(event).run_list_assigned_task()
     elif task=="search_issues":
         RunSearchIssuesTask(event).run()
+    elif task=="uninstall_workspace":
+        from handlers.slack_events_handler import uninstall_workspace
+        uninstall_workspace(event["team_id"], reason=event.get("reason", "app_uninstalled"))
     else:
         return json_response(400,{"error":"unknown task"})
     return json_response(200,{"ok":True})

@@ -123,6 +123,7 @@ def test_injected_violation_is_reported(repo, rel, code, rule):
      "provided_secret==expected_secret", "G4"),
     ("slack/slack_security.py", "> 300", "> 3000", "G4"),
     ("approval/approval_repository.py", " AND slack_user_id = :owner", "", "G5"),
+    ("approval/approval_repository.py", " AND team_id = :team", "", "G5"),
     ("approval/approval_repository.py", "ConditionExpression=\"#s = :executing\",", "", "G5"),
 ])
 def test_removed_safeguard_is_reported(repo, rel, old, new, rule):

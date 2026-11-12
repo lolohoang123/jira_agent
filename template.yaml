@@ -12,6 +12,13 @@ Parameters:
     Type: String
     Default: python3.12
     Description: Lambda runtime (CLAUDE.md targets python3.12).
+  SlackClientId:
+    Type: String
+    Description: Slack app client id (Basic Information). The client secret is in SSM (slack-client-secret).
+  SlackAppId:
+    Type: String
+    Default: ""
+    Description: Optional. Slack app id (A...); events for any other app are ignored.
   AtlassianClientId:
     Type: String
     Description: Atlassian OAuth 2.0 (3LO) client id (not secret). The client secret is in SSM.
@@ -93,15 +100,34 @@ Resources:
       TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
       SSESpecification: { SSEEnabled: true }
 
-  OAuthUsersTable:
+  # Jira connections keyed by (team_id, slack_user_id): Slack user ids are only unique per workspace.
+  # Replaces the single-key jira-agent-<stage>-users table (retained by its DeletionPolicy; delete it by hand).
+  JiraConnectionsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub jira-agent-${Stage}-users
+      TableName: !Sub jira-agent-${Stage}-jira-connections
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{ AttributeName: slack_user_id, AttributeType: S }]
-      KeySchema: [{ AttributeName: slack_user_id, KeyType: HASH }]
+      AttributeDefinitions:
+        - { AttributeName: team_id, AttributeType: S }
+        - { AttributeName: slack_user_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: team_id, KeyType: HASH }
+        - { AttributeName: slack_user_id, KeyType: RANGE }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  # One row per Slack workspace that installed the app (bot token). Written by the Slack OAuth v2 flow.
+  InstallationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub jira-agent-${Stage}-installations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: team_id, AttributeType: S }]
+      KeySchema: [{ AttributeName: team_id, KeyType: HASH }]
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
       SSESpecification: { SSEEnabled: true }
 
@@ -186,6 +212,27 @@ Resources:
         ThrottlingRateLimit: !Ref ApiThrottleRate
         ThrottlingBurstLimit: !Ref ApiThrottleBurst
 
+  SlackInstallRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref JiraAgentApi
+      RouteKey: GET /slack/install
+      Target: !Sub integrations/${JiraAgentIntegration}
+
+  SlackOAuthCallbackRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref JiraAgentApi
+      RouteKey: GET /slack/oauth/callback
+      Target: !Sub integrations/${JiraAgentIntegration}
+
+  SlackEventsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref JiraAgentApi
+      RouteKey: POST /slack/events
+      Target: !Sub integrations/${JiraAgentIntegration}
+
   ApiInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -219,7 +266,12 @@ Resources:
           ATLASSIAN_CLIENT_ID: !Ref AtlassianClientId
           ATLASSIAN_REDIRECT_URI: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/oauth/callback
           OAUTH_STATES_TABLE: !Ref OAuthStatesTable
-          OAUTH_USERS_TABLE: !Ref OAuthUsersTable
+          OAUTH_USERS_TABLE: !Ref JiraConnectionsTable
+          INSTALLATIONS_TABLE: !Ref InstallationsTable
+          SLACK_CLIENT_ID: !Ref SlackClientId
+          SLACK_APP_ID: !Ref SlackAppId
+          SLACK_REDIRECT_URI: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/slack/oauth/callback
+          SLACK_INSTALL_URL: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/slack/install
           APPROVALS_TABLE: !Ref ApprovalsTable
           RATE_LIMITS_TABLE: !Ref RateLimitsTable
           BEDROCK_MODEL_ID: !Ref BedrockModelId
@@ -232,7 +284,8 @@ Resources:
           AGENT_RATE_LIMIT_PER_HOUR: !Ref AgentRateLimitPerHour
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref OAuthStatesTable }
-        - DynamoDBCrudPolicy: { TableName: !Ref OAuthUsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref JiraConnectionsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref InstallationsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ApprovalsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref RateLimitsTable }
         - SQSSendMessagePolicy: { QueueName: !GetAtt AsyncFailureQueue.QueueName }
@@ -347,6 +400,15 @@ Outputs:
   OAuthCallbackUrl:
     Description: Register exactly this URL as the callback URL of the Atlassian app.
     Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/oauth/callback
+  SlackInstallUrl:
+    Description: Share this "Add to Slack" link; each workspace installs the app through it.
+    Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/slack/install
+  SlackRedirectUrl:
+    Description: Slack app > OAuth & Permissions > Redirect URLs (exactly this value).
+    Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/slack/oauth/callback
+  SlackEventsUrl:
+    Description: Slack app > Event Subscriptions > Request URL (bot events app_uninstalled, tokens_revoked).
+    Value: !Sub https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com/slack/events
   SsmParameterPrefix:
     Description: Create the SecureString parameters under this path before the first request.
     Value: !Sub /jira-agent/${Stage}/

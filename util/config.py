@@ -20,7 +20,8 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
-SECRET_NAMES = ("SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "ATLASSIAN_CLIENT_SECRET", "ASYNC_TASK_SECRET")
+# Bot tokens are per workspace (installations table, Slack OAuth v2), so there is no global bot token secret.
+SECRET_NAMES = ("SLACK_SIGNING_SECRET", "SLACK_CLIENT_SECRET", "ATLASSIAN_CLIENT_SECRET", "ASYNC_TASK_SECRET")
 DEFAULT_CACHE_SECONDS = 300
 _MISSING = object()
 

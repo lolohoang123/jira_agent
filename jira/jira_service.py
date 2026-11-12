@@ -38,8 +38,9 @@ def jql_like_clause(keyword):
 
 
 class JiraService:
-    def __init__(self, slack_user_id):
-        self.client = JiraClient(slack_user_id)
+    def __init__(self, team_id, slack_user_id):
+        self.client = JiraClient(team_id, slack_user_id)
+        self.team_id = team_id
         self.slack_user_id = slack_user_id
 
     @property

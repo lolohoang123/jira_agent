@@ -20,7 +20,7 @@ def env(monkeypatch):
 
 
 def command(text):
-    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "user_id": "U1", "channel_id": "C1",
+    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "team_id": "T1", "user_id": "U1", "channel_id": "C1",
                                    "response_url": RESPONSE_URL})
     lambda_client = MagicMock()
     response = handle_slack_request({"headers": {}}, SimpleNamespace(function_name="jira-agent"), body, lambda_client)
@@ -96,7 +96,7 @@ def test_disconnect_works_while_agent_is_disabled(monkeypatch):
 def test_queued_agent_task_is_answered_without_bedrock(monkeypatch):
     # Arrange: a request accepted before the flag was turned off
     monkeypatch.setenv("AGENT_ENABLED", "false")
-    event = {"_async_task": "agent_request", "slack_user_id": "U1", "channel_id": "C1",
+    event = {"_async_task": "agent_request", "team_id": "T1", "slack_user_id": "U1", "channel_id": "C1",
              "text": "list my tickets", "response_url": RESPONSE_URL}
     with patch("agent.orchestrator.AgentOrchestrator") as orchestrator, \
             patch("slack.slack_client.post_slack_response") as post:
@@ -113,7 +113,7 @@ def test_queued_agent_task_is_answered_without_bedrock(monkeypatch):
 def test_queued_task_notice_failure_is_not_raised(monkeypatch):
     # Arrange
     monkeypatch.setenv("AGENT_ENABLED", "false")
-    event = {"_async_task": "agent_request", "slack_user_id": "U1", "channel_id": "C1",
+    event = {"_async_task": "agent_request", "team_id": "T1", "slack_user_id": "U1", "channel_id": "C1",
              "text": "x", "response_url": RESPONSE_URL}
     with patch("slack.slack_client.post_slack_response", side_effect=RuntimeError("Slack down")):
         # Act

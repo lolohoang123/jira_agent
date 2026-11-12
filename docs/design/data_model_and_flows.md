@@ -52,10 +52,12 @@ erDiagram
     OAUTH_USERS ||..o{ APPROVALS : "owns (slack_user_id)"
     OAUTH_USERS ||..o{ OAUTH_STATES : "connect attempts (slackUserId)"
     OAUTH_USERS ||..o{ RATE_LIMITS : "agent requests per hour"
+    INSTALLATIONS ||..o{ OAUTH_USERS : "workspace (team_id)"
     APPROVALS ||..o| DEDUPE_ROW : "blocks duplicates (dedupe_key)"
 
     OAUTH_USERS {
-        string slack_user_id PK "Slack user id"
+        string team_id PK "Slack workspace id"
+        string slack_user_id PK "Slack user id (sort key)"
         string jiraAccountId "Atlassian accountId"
         string jiraCloudId "Jira site cloud id"
         string jiraSiteUrl "Used to build issue links"
@@ -81,7 +83,8 @@ erDiagram
     }
     APPROVALS {
         string approval_id PK "uuid4"
-        string slack_user_id "Owner, the only user who may approve"
+        string team_id "Owner workspace"
+        string slack_user_id "Owner, the only user who may approve (with team_id)"
         string channel_id "Channel the request came from"
         string action "create_worklog"
         map form "issue_key, date, start_time, duration, description, remaining_estimate, new_estimate"
@@ -95,6 +98,16 @@ erDiagram
         number completed_at
         string error_message "Max 500 chars, no description"
         number ttl "TTL attribute, 24h while PENDING, + retention once handled"
+    }
+    INSTALLATIONS {
+        string team_id PK "Slack workspace id"
+        string team_name
+        string bot_token "Secret, never logged"
+        string bot_user_id
+        string app_id
+        string scope
+        string installed_by_user_id
+        number installed_at
     }
     DEDUPE_ROW {
         string approval_id PK "dedupe-prefixed key, same table as APPROVALS"
@@ -492,6 +505,64 @@ sequenceDiagram
 | 8 | `JiraService` | POST worklog | Jira error or timeout | `EXECUTION_FAILED`, dedupe released, user told to check Jira; not retried |
 | 9 | `ApprovalRepository` | Finish `APPROVED_EXECUTED`, `ttl` = retention | DynamoDB error after Jira success | `EXECUTION_FAILED`, dedupe **kept** (TC-29) |
 | 10 | `AsyncTaskHandler` | Notify user; replace buttons only on success | Slack error | Logged, best effort |
+
+## 7. Multi-workspace (Slack OAuth v2)
+
+Every Slack identity is the pair (`team_id`, `slack_user_id`): Slack user ids are only unique inside a workspace.
+Jira connections (`jira-agent-<stage>-jira-connections`, PK `team_id`, SK `slack_user_id`), approvals (owner check
+`slack_user_id = :owner AND team_id = :team`), dedupe keys, rate-limit keys and OAuth states all carry `team_id`.
+Slack calls use the bot token of the request's workspace: `slack_api(method, payload, team_id)`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor A as Workspace admin
+    participant L as Lambda
+    participant ST as oauth-states
+    participant SL as Slack
+    participant IN as installations
+
+    A->>L: GET /slack/install
+    L->>ST: Put state (kind slack_install, 10 min)
+    L-->>A: 302 to slack.com/oauth/v2/authorize (client_id, scopes, redirect_uri, state)
+    A->>SL: Approve the app for the workspace
+    SL->>L: GET /slack/oauth/callback with code and state
+    L->>ST: Consume state (single use, unexpired, kind slack_install)
+    L->>SL: oauth.v2.access (client id and secret)
+    alt Enterprise Grid org-wide install
+        L-->>A: 400 page "install per workspace"
+    else Workspace bot token
+        L->>IN: Put installation (team_id, bot token)
+        L-->>A: 200 page "Jira app installed"
+    end
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SL as Slack
+    participant L as Lambda (sync)
+    participant A as Lambda (async)
+    participant IN as installations
+    participant JC as jira-connections
+    participant AP as approvals
+
+    SL->>L: POST /slack/events (signed) app_uninstalled or tokens_revoked
+    L->>A: invoke Event uninstall_workspace (team_id, reason)
+    L-->>SL: 200 within 3 s
+    A->>IN: Delete installation
+    alt app_uninstalled
+        A->>JC: Query team_id, delete every connection and token
+        A->>AP: Scan PENDING of team_id, cancel each (dedupe released)
+    else tokens_revoked with bot tokens
+        Note over A,JC: Installation only, Jira connections kept for a reinstall
+    end
+```
+
+- A command from a workspace without an installation gets "hasn't installed the Jira app yet" with the install link.
+- `url_verification` echoes the challenge; other events are acknowledged and ignored; events for another `api_app_id`
+  are ignored when `SLACK_APP_ID` is set. Cleanup is idempotent, so Slack retries are harmless; a failed step still
+  lets the others run and then fails the task into the async-failures queue.
 
 ## 6. Deployment and operations
 

@@ -9,3 +9,7 @@ ATLASSIAN_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 ATLASSIAN_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
 APPROVALS_TABLE_ENV = "APPROVALS_TABLE"
+
+# Slack OAuth v2 ("Add to Slack"). Bot scopes only: slash command + messages/DMs from the bot.
+SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
+SLACK_BOT_SCOPES = ["commands", "chat:write"]

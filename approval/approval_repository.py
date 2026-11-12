@@ -22,9 +22,10 @@ class DuplicateApprovalError(Exception):
         self.dedupe_key = dedupe_key
 
 
-def build_dedupe_key(slack_user_id, form):
-    """Stable key for "the same worklog": user, issue, date, start time and normalised duration."""
+def build_dedupe_key(team_id, slack_user_id, form):
+    """Stable key for "the same worklog": workspace, user, issue, date, start time and normalised duration."""
     parts = [
+        team_id or "",
         slack_user_id or "",
         str(form.get("issue_key") or "").strip().upper(),
         str(form.get("date") or ""),
@@ -68,9 +69,10 @@ class ApprovalRepository:
 
     def create_pending(self, approval, ttl_seconds=86400):
         now = int(time.time())
-        dedupe_key = build_dedupe_key(approval["slack_user_id"], approval["form"])
+        dedupe_key = build_dedupe_key(approval["team_id"], approval["slack_user_id"], approval["form"])
         item = {
             "approval_id": str(uuid.uuid4()),
+            "team_id": approval["team_id"],
             "slack_user_id": approval["slack_user_id"],
             "channel_id": approval["channel_id"],
             "action": approval["action"],
@@ -111,15 +113,15 @@ class ApprovalRepository:
         result = self.table.get_item(Key={"approval_id": approval_id}, ConsistentRead=True)
         return result.get("Item")
 
-    def claim(self, approval_id, slack_user_id):
-        """Atomically claim PENDING -> EXECUTING; only the owner can claim."""
+    def claim(self, approval_id, team_id, slack_user_id):
+        """Atomically claim PENDING -> EXECUTING; only the owner (same workspace and user) can claim."""
         now = int(time.time())
         return self._owner_transition(
-            approval_id, slack_user_id, "EXECUTING", "approved_at", now)
+            approval_id, team_id, slack_user_id, "EXECUTING", "approved_at", now)
 
-    def reject(self, approval_id, slack_user_id):
+    def reject(self, approval_id, team_id, slack_user_id):
         now = int(time.time())
-        item = self._owner_transition(approval_id, slack_user_id, "REJECTED", "rejected_at", now)
+        item = self._owner_transition(approval_id, team_id, slack_user_id, "REJECTED", "rejected_at", now)
         if item:
             self.release_dedupe(item)
         return item
@@ -181,16 +183,40 @@ class ApprovalRepository:
             # Already gone or owned by a newer request; it also expires on its own.
             logger.warning("Could not release dedupe row for approval %s", approval_id)
 
-    def _owner_transition(self, approval_id, slack_user_id, new_status, timestamp_field, now):
+    def cancel_pending_for_team(self, team_id, reason="Slack app uninstalled"):
+        """Cancel every PENDING approval of a workspace (app uninstalled). Returns the number cancelled.
+
+        Scans the table (no index on team_id); used only on uninstall, which is rare.
+        """
+        if not team_id:
+            raise ValueError("team_id is required")
+        cancelled, start_key = 0, None
+        while True:
+            kwargs = {"FilterExpression": "team_id = :team AND #s = :pending",
+                      "ExpressionAttributeNames": {"#s": "status"},
+                      "ExpressionAttributeValues": {":team": team_id, ":pending": "PENDING"},
+                      "ProjectionExpression": "approval_id"}
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            page = self.table.scan(**kwargs)
+            for row in page.get("Items", []):
+                if self.cancel(row["approval_id"], reason=reason):
+                    cancelled += 1
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return cancelled
+
+    def _owner_transition(self, approval_id, team_id, slack_user_id, new_status, timestamp_field, now):
         try:
             result = self.table.update_item(
                 Key={"approval_id": approval_id},
                 # Extend the TTL so the row is kept as an audit record (GAP-05).
                 UpdateExpression=f"SET #s = :new_status, {timestamp_field} = :now, #ttl = :ttl",
-                ConditionExpression="#s = :pending AND slack_user_id = :owner AND expires_at > :now",
+                ConditionExpression=("#s = :pending AND slack_user_id = :owner AND team_id = :team "
+                                     "AND expires_at > :now"),
                 ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
                 ExpressionAttributeValues={":new_status": new_status, ":pending": "PENDING",
-                                           ":owner": slack_user_id, ":now": now,
+                                           ":owner": slack_user_id, ":team": team_id, ":now": now,
                                            ":ttl": now + retention_seconds()},
                 ReturnValues="ALL_NEW",
             )

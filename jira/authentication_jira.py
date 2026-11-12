@@ -70,7 +70,7 @@ class AuthenticationJira:
         if not code or not state:
             return self.html_response(400,"Could not connect Jira","Missing authorization code or state. Run `/jira-agent connect` again.")
         try:
-            slack_user_id=DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state(state)
+            team_id,slack_user_id=DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state(state,kind="jira")
             token=self.exchange_oauth_code(code)
             access,refresh=token.get("access_token"),token.get("refresh_token")
             if not access or not refresh:
@@ -80,7 +80,7 @@ class AuthenticationJira:
             api=f"https://api.atlassian.com/ex/jira/{urllib.parse.quote(site['id'],safe='')}/rest/api/3/myself"
             myself=self.atlassian_json_request(api,access_token=access)
             now=int(time.time()); expires=now+int(token.get("expires_in",3600))
-            record={"slack_user_id":slack_user_id,"jiraAccountId":myself.get("accountId",""),
+            record={"team_id":team_id,"slack_user_id":slack_user_id,"jiraAccountId":myself.get("accountId",""),
                     "jiraCloudId":site["id"],"jiraSiteUrl":site["url"].rstrip("/"),
                     "jiraSiteName":site.get("name",""),"accessToken":access,"refreshToken":refresh,
                     "accessTokenExpiresAt":expires,
@@ -95,9 +95,9 @@ class AuthenticationJira:
             logger.exception("Failed to complete Atlassian OAuth callback")
             return self.html_response(500,"Could not connect Jira","Connection failed. Check Lambda logs and OAuth configuration, then try again.")
 
-    def build_connect_response(self, slack_user_id):
+    def build_connect_response(self, team_id, slack_user_id):
         try:
-            url=DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url(slack_user_id)
+            url=DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url(team_id,slack_user_id)
             return json_response(200,{"response_type":"ephemeral","text":f"Connect your Jira account: <{url}|*Connect Jira*>. This link expires in 10 minutes and can only be used once."})
         except Exception:
             logger.exception("Could not create Jira OAuth authorization URL")

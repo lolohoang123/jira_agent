@@ -24,7 +24,7 @@ NOW = 1_700_000_000
 OWNER = "U_OWNER"
 FORM = {"issue_key": "PROJ-1", "date": "2026-11-09", "start_time": "09:00", "duration": "1h",
         "description": "secret notes", "remaining_estimate": "leave"}
-SECRET_VALUES = {"SLACK_SIGNING_SECRET": "sign-SECRET", "SLACK_BOT_TOKEN": "xoxb-SECRET",
+SECRET_VALUES = {"SLACK_SIGNING_SECRET": "sign-SECRET", "SLACK_CLIENT_SECRET": "slack-client-SECRET",
                  "ATLASSIAN_CLIENT_SECRET": "client-SECRET", "ASYNC_TASK_SECRET": "task-SECRET"}
 
 
@@ -70,10 +70,10 @@ def test_parameter_names_are_kebab_case_under_prefix(prefix, name, expected):
 
 def test_without_prefix_secrets_come_from_env(monkeypatch, ssm):
     # Arrange
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-local")
+    monkeypatch.setenv("SLACK_CLIENT_SECRET", "client-local")
 
     # Act & Assert
-    assert config.get_secret("SLACK_BOT_TOKEN") == "xoxb-local"
+    assert config.get_secret("SLACK_CLIENT_SECRET") == "client-local"
     ssm.get_parameters.assert_not_called()
 
 
@@ -127,9 +127,9 @@ def test_cache_expires_and_reloads(monkeypatch, ssm):
     # monotonic() calls: load at 0; check at 10 (fresh); check at 400 (stale) then reload at 400
     with patch.object(config.time, "monotonic", side_effect=[0, 10, 400, 400]):
         # Act
-        config.get_secret("SLACK_BOT_TOKEN")  # load at t=0
-        config.get_secret("SLACK_BOT_TOKEN")  # cached at t=10
-        config.get_secret("SLACK_BOT_TOKEN")  # expired at t=400 -> reload
+        config.get_secret("SLACK_CLIENT_SECRET")  # load at t=0
+        config.get_secret("SLACK_CLIENT_SECRET")  # cached at t=10
+        config.get_secret("SLACK_CLIENT_SECRET")  # expired at t=400 -> reload
 
     # Assert
     assert ssm.get_parameters.call_count == 2
@@ -138,14 +138,14 @@ def test_cache_expires_and_reloads(monkeypatch, ssm):
 def test_missing_parameters_are_logged_by_name_only(monkeypatch, ssm, caplog):
     # Arrange
     monkeypatch.setenv("SSM_PARAMETER_PREFIX", "/jira-agent/prod/")
-    ssm.get_parameters.return_value["InvalidParameters"] = ["/jira-agent/prod/slack-bot-token"]
+    ssm.get_parameters.return_value["InvalidParameters"] = ["/jira-agent/prod/slack-client-secret"]
 
     # Act
     with caplog.at_level(logging.WARNING):
         config.get_secret("SLACK_SIGNING_SECRET")
 
     # Assert
-    assert "/jira-agent/prod/slack-bot-token" in caplog.text
+    assert "/jira-agent/prod/slack-client-secret" in caplog.text
     assert all(value not in caplog.text for value in SECRET_VALUES.values())
 
 
@@ -172,7 +172,7 @@ def test_signature_check_uses_ssm_secret(monkeypatch, ssm):
 def approval_setup():
     repo = MagicMock(spec=ApprovalRepository)
     repo.create_pending.return_value = {"approval_id": "a-1"}
-    service = ApprovalService(repo, cloud_id_resolver=lambda user: "cloud-1")
+    service = ApprovalService(repo, cloud_id_resolver=lambda team, user: "cloud-1")
     with patch.object(approval_service, "slack_api") as slack_api:
         yield service, slack_api
 
@@ -186,7 +186,7 @@ def test_gap03_approval_goes_to_dm_unless_channel_mode(monkeypatch, approval_set
         monkeypatch.setenv("APPROVAL_DELIVERY", mode)
 
     # Act
-    service.request_worklog_approval(OWNER, "C1", FORM)
+    service.request_worklog_approval("T1", OWNER, "C1", FORM)
 
     # Assert
     assert slack_api.call_args.args[1]["channel"] == target
@@ -235,17 +235,17 @@ def test_gap04_disconnect_deletes_connection(users_table, attributes, expected):
     users_table.delete_item.return_value = {"Attributes": attributes} if attributes else {}
 
     # Act
-    removed = DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user(OWNER)
+    removed = DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user("T1", OWNER)
 
     # Assert
     assert removed is expected
-    users_table.delete_item.assert_called_once_with(Key={"slack_user_id": OWNER}, ReturnValues="ALL_OLD")
+    users_table.delete_item.assert_called_once_with(Key={"team_id": "T1", "slack_user_id": OWNER}, ReturnValues="ALL_OLD")
 
 
 def test_gap04_disconnect_requires_user(users_table):
     # Act & Assert
     with pytest.raises(ValueError):
-        DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user("")
+        DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user("T1", "")
     users_table.delete_item.assert_not_called()
 
 
@@ -257,9 +257,9 @@ def test_gap04_disconnected_row_counts_as_not_connected(users_table, item):
 
     # Act & Assert
     with pytest.raises(ValueError, match="not connected"):
-        helper.get_jira_account_id_for_slack_user(OWNER)
+        helper.get_jira_account_id_for_slack_user("T1", OWNER)
     with pytest.raises(ValueError, match="not connected"):
-        helper.get_jira_cloud_id_for_slack_user(OWNER)
+        helper.get_jira_cloud_id_for_slack_user("T1", OWNER)
 
 
 def refresh_failure(table, error_body, status=400):
@@ -273,7 +273,7 @@ def refresh_failure(table, error_body, status=400):
         fake_time.time.return_value = NOW
         fake_time.monotonic.return_value = 0
         with pytest.raises(RuntimeError) as exc_info:
-            DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token(OWNER)
+            DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", OWNER)
     return exc_info.value
 
 
@@ -381,7 +381,7 @@ def test_gap12_limit_from_env(monkeypatch, value, expected):
 # --------------------------------------------------------------------------------------
 
 def command(text):
-    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "user_id": OWNER, "channel_id": "C1",
+    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "team_id": "T1", "user_id": OWNER, "channel_id": "C1",
                                    "response_url": "https://hooks.slack.com/commands/T/1/x"})
     lambda_client = MagicMock()
     response = handle_slack_request({"headers": {}}, SimpleNamespace(function_name="jira-agent"), body,
@@ -401,7 +401,7 @@ def test_disconnect_command(removed, expected):
 
     # Assert
     assert expected in body["text"] and body["response_type"] == "ephemeral"
-    helper.return_value.disconnect_slack_user.assert_called_once_with(OWNER)
+    helper.return_value.disconnect_slack_user.assert_called_once_with("T1", OWNER)
     lambda_client.invoke.assert_not_called()
 
 
@@ -426,7 +426,7 @@ def test_agent_requests_are_rate_limited(monkeypatch, allowed):
         body, lambda_client = command("how much did I log this week?")
 
     # Assert
-    check.assert_called_once_with(OWNER)
+    check.assert_called_once_with("T1", OWNER)
     assert lambda_client.invoke.called is allowed
     assert ("limit of 20 assistant requests per hour" in body["text"]) is (not allowed)
 

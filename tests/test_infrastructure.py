@@ -91,7 +91,8 @@ def test_approvals_are_private_by_default(template):
 
 @pytest.mark.parametrize("table,ttl_attribute,pitr", [
     ("OAuthStatesTable", "expiresAt", False),
-    ("OAuthUsersTable", None, True),
+    ("JiraConnectionsTable", None, True),
+    ("InstallationsTable", None, True),
     ("ApprovalsTable", "ttl", True),
     ("RateLimitsTable", "ttl", False),
 ])
@@ -120,8 +121,9 @@ def test_routes_and_callback_url(template, function):
     permission = resources["ApiInvokePermission"]["Properties"]
 
     # Assert: exactly the two public routes, both proxied to the function, invokable only from this API
-    assert routes == {"POST /": {"Sub": "integrations/${JiraAgentIntegration}"},
-                      "GET /oauth/callback": {"Sub": "integrations/${JiraAgentIntegration}"}}
+    target = {"Sub": "integrations/${JiraAgentIntegration}"}
+    assert routes == {"POST /": target, "GET /oauth/callback": target, "GET /slack/install": target,
+                      "GET /slack/oauth/callback": target, "POST /slack/events": target}
     assert integration["IntegrationUri"] == {"GetAtt": "JiraAgentFunction.Arn"}
     assert integration["PayloadFormatVersion"] == "2.0"  # handler reads rawPath / requestContext.http
     assert permission["Principal"] == "apigateway.amazonaws.com"
@@ -294,3 +296,28 @@ def test_agent_flag_is_wired_and_off_by_default(template, function):
     assert function["Environment"]["Variables"]["AGENT_ENABLED"] == {"Ref": "AgentEnabled"}
     workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert 'overrides+=("AgentEnabled=$AGENT_ENABLED")' in workflow
+
+
+def test_jira_connections_are_keyed_by_workspace_and_user(template, function):
+    # Assert: Slack user ids are only unique per workspace
+    props = template["Resources"]["JiraConnectionsTable"]["Properties"]
+    assert props["KeySchema"] == [{"AttributeName": "team_id", "KeyType": "HASH"},
+                                  {"AttributeName": "slack_user_id", "KeyType": "RANGE"}]
+    assert template["Resources"]["InstallationsTable"]["Properties"]["KeySchema"] == [
+        {"AttributeName": "team_id", "KeyType": "HASH"}]
+    assert "OAuthUsersTable" not in template["Resources"]
+    variables = function["Environment"]["Variables"]
+    assert variables["OAUTH_USERS_TABLE"] == {"Ref": "JiraConnectionsTable"}
+    assert variables["INSTALLATIONS_TABLE"] == {"Ref": "InstallationsTable"}
+
+
+def test_slack_oauth_urls_come_from_this_api(template, function):
+    # Assert: redirect, install link and outputs all point at this stack's API
+    variables = function["Environment"]["Variables"]
+    base = "https://${JiraAgentApi}.execute-api.${AWS::Region}.amazonaws.com"
+    assert variables["SLACK_REDIRECT_URI"] == {"Sub": f"{base}/slack/oauth/callback"}
+    assert variables["SLACK_INSTALL_URL"] == {"Sub": f"{base}/slack/install"}
+    assert variables["SLACK_CLIENT_ID"] == {"Ref": "SlackClientId"}
+    outputs = template["Outputs"]
+    assert outputs["SlackRedirectUrl"]["Value"] == {"Sub": f"{base}/slack/oauth/callback"}
+    assert outputs["SlackEventsUrl"]["Value"] == {"Sub": f"{base}/slack/events"}

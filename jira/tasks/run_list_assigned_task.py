@@ -12,7 +12,7 @@ class RunListAssignedTask:
     def run(self):
         url=self.event["response_url"]
         try:
-            service=JiraService(self.event["slack_user_id"])
+            service=JiraService(self.event["team_id"],self.event["slack_user_id"])
             issues=service.find_assigned_issues(self.event["account_id"])
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,
                 "text":"Your assigned Jira tickets",

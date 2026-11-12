@@ -26,7 +26,8 @@ SENSITIVE_NAME = re.compile(
 LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
 ALLOWED_RUNTIME_DEPS = {"boto3"}
 FORBIDDEN_HTTP_LIBS = {"requests", "httpx", "aiohttp", "urllib3"}
-SECRET_NAMES = {"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "ATLASSIAN_CLIENT_SECRET", "ASYNC_TASK_SECRET"}
+SECRET_NAMES = {"SLACK_SIGNING_SECRET", "SLACK_CLIENT_SECRET", "SLACK_BOT_TOKEN", "ATLASSIAN_CLIENT_SECRET",
+                "ASYNC_TASK_SECRET"}
 SECRET_LOADER = "util/config.py"
 
 
@@ -159,6 +160,7 @@ class Checker:
         src = self.sources.get(path, "")
         for needle, message in [
             ("slack_user_id = :owner", "claim/reject not bound to the approval owner"),
+            ("slack_user_id = :owner AND team_id = :team", "claim/reject not bound to the owner's Slack workspace"),
             ("#s = :pending", "claim/reject does not require status PENDING"),
             ("expires_at > :now", "claim/reject does not check expiry"),
             ("#s = :executing", "finish does not require status EXECUTING"),

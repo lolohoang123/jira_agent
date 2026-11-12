@@ -49,11 +49,11 @@ def claimed(cloud_id="site-A"):
 
 def test_request_stores_current_site_on_approval(table):
     # Arrange
-    service = ApprovalService(ApprovalRepository(table=table), cloud_id_resolver=lambda user: "site-A")
+    service = ApprovalService(ApprovalRepository(table=table), cloud_id_resolver=lambda team, user: "site-A")
 
     # Act
     with patch("approval.approval_service.slack_api"):
-        item = service.request_worklog_approval(OWNER, "C1", FORM)
+        item = service.request_worklog_approval("T1", OWNER, "C1", FORM)
 
     # Assert
     assert item["jira_cloud_id"] == "site-A"
@@ -66,21 +66,21 @@ def test_request_without_connection_creates_nothing():
     # Arrange
     repo = MagicMock(spec=ApprovalRepository)
 
-    def not_connected(user):
+    def not_connected(team_id, user):
         raise ValueError("Jira account is not connected. Run `/jira-agent connect` first.")
 
     service = ApprovalService(repo, cloud_id_resolver=not_connected)
 
     # Act & Assert
     with pytest.raises(ValueError, match="not connected"):
-        service.request_worklog_approval(OWNER, "C1", FORM)
+        service.request_worklog_approval("T1", OWNER, "C1", FORM)
     repo.create_pending.assert_not_called()
 
 
 def test_repository_omits_site_when_not_given(table):
     # Act
     item = ApprovalRepository(table=table).create_pending(
-        {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM})
+        {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": FORM})
 
     # Assert
     assert "jira_cloud_id" not in item
@@ -96,7 +96,7 @@ def test_approve_same_site_writes_worklog(jira_service):
     jira_service.return_value.create_worklog.return_value = {"id": "10001"}
 
     # Act
-    result = ApprovalService(repo).approve_and_execute(APPROVAL_ID, OWNER)
+    result = ApprovalService(repo).approve_and_execute("T1", APPROVAL_ID, OWNER)
 
     # Assert
     assert result["ok"] is True
@@ -111,7 +111,7 @@ def test_approve_after_reconnect_to_other_site_cancels_without_write(jira_servic
     jira_service.return_value.cloud_id = "site-B"
 
     # Act
-    result = ApprovalService(repo).approve_and_execute(APPROVAL_ID, OWNER)
+    result = ApprovalService(repo).approve_and_execute("T1", APPROVAL_ID, OWNER)
 
     # Assert
     assert result == {"ok": False, "message": SITE_CHANGED_MESSAGE}
@@ -126,7 +126,7 @@ def test_legacy_approval_without_site_is_still_executed(jira_service):
     jira_service.return_value.cloud_id = "site-B"
 
     # Act
-    result = ApprovalService(repo).approve_and_execute(APPROVAL_ID, OWNER)
+    result = ApprovalService(repo).approve_and_execute("T1", APPROVAL_ID, OWNER)
 
     # Assert
     assert result["ok"] is True
@@ -158,12 +158,12 @@ def test_cloud_id_lookup_reads_only_cloud_id():
     helper, users = _helper({"jiraCloudId": "site-A"})
 
     # Act
-    cloud_id = helper.get_jira_cloud_id_for_slack_user(OWNER)
+    cloud_id = helper.get_jira_cloud_id_for_slack_user("T1", OWNER)
 
     # Assert
     assert cloud_id == "site-A"
     # Reads the cloud id and the connected flag only, never tokens.
-    users.get_item.assert_called_once_with(Key={"slack_user_id": OWNER},
+    users.get_item.assert_called_once_with(Key={"team_id": "T1", "slack_user_id": OWNER},
                                            ProjectionExpression="jiraCloudId, #connected",
                                            ExpressionAttributeNames={"#connected": "connected"},
                                            ConsistentRead=True)
@@ -173,4 +173,4 @@ def test_cloud_id_lookup_reads_only_cloud_id():
 def test_cloud_id_lookup_requires_connection(item):
     helper, _ = _helper(item)
     with pytest.raises(ValueError, match="not connected"):
-        helper.get_jira_cloud_id_for_slack_user(OWNER)
+        helper.get_jira_cloud_id_for_slack_user("T1", OWNER)

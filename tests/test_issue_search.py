@@ -56,7 +56,7 @@ def test_tc02_other_commands_are_not_searches(text):
 
 
 def command(text):
-    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "user_id": "U1", "channel_id": "C1",
+    body = urllib.parse.urlencode({"command": "/jira-agent", "text": text, "team_id": "T1", "user_id": "U1", "channel_id": "C1",
                                    "response_url": RESPONSE_URL})
     lambda_client = MagicMock()
     response = handle_slack_request({"headers": {}}, SimpleNamespace(function_name="jira-agent"), body, lambda_client)
@@ -77,7 +77,7 @@ def test_tc03_search_starts_async_task(connected):
     # Assert
     assert body == {"response_type": "ephemeral", "text": "Searching Jira tickets..."}
     task = json.loads(lambda_client.invoke.call_args.kwargs["Payload"])
-    assert task == {"_async_task": "search_issues", "_task_secret": "task-secret", "slack_user_id": "U1",
+    assert task == {"_async_task": "search_issues", "team_id": "T1", "_task_secret": "task-secret", "slack_user_id": "U1",
                     "keyword": "Login Bug", "response_url": RESPONSE_URL}
 
 
@@ -198,7 +198,7 @@ def jira():
 
 def test_tc09_text_search_request(jira):
     # Act
-    issues = JiraService("U1").search_issues("login bug")
+    issues = JiraService("T1", "U1").search_issues("login bug")
 
     # Assert
     assert [i["key"] for i in issues] == ["PROJ-1", "PROJ-2"]
@@ -212,7 +212,7 @@ def test_tc09_only_one_page_is_fetched(jira):
     jira.request.return_value = {"issues": [issue("PROJ-1")], "nextPageToken": "more"}
 
     # Act
-    JiraService("U1").search_issues("login")
+    JiraService("T1", "U1").search_issues("login")
 
     # Assert
     assert jira.request.call_count == 1
@@ -231,7 +231,7 @@ def test_tc10_issue_key_is_fetched_first_without_duplicates(jira, keyword):
     jira.request.side_effect = respond
 
     # Act
-    issues = JiraService("U1").search_issues(keyword)
+    issues = JiraService("T1", "U1").search_issues(keyword)
 
     # Assert
     assert [i["key"] for i in issues] == ["PROJ-2", "PROJ-1"]
@@ -250,7 +250,7 @@ def test_tc11_unknown_issue_key_is_ignored(jira):
     jira.request.side_effect = respond
 
     # Act
-    issues = JiraService("U1").search_issues("NOPE-1")
+    issues = JiraService("T1", "U1").search_issues("NOPE-1")
 
     # Assert
     assert [i["key"] for i in issues] == ["NOPE-1"]
@@ -258,7 +258,7 @@ def test_tc11_unknown_issue_key_is_ignored(jira):
 
 def test_tc11_plain_keyword_does_not_fetch_an_issue(jira):
     # Act
-    JiraService("U1").search_issues("login")
+    JiraService("T1", "U1").search_issues("login")
 
     # Assert
     assert [c.args[0] for c in jira.request.call_args_list] == ["/rest/api/3/search/jql"]
@@ -269,7 +269,7 @@ def test_tc12_results_are_capped_at_limit_plus_one(jira):
     jira.request.return_value = {"issues": [issue(f"PROJ-{n}") for n in range(25)]}
 
     # Act
-    issues = JiraService("U1").search_issues("login")
+    issues = JiraService("T1", "U1").search_issues("login")
 
     # Assert
     assert len(issues) == 21
@@ -278,7 +278,7 @@ def test_tc12_results_are_capped_at_limit_plus_one(jira):
 def test_tc12_empty_terms_raise(jira):
     # Act & Assert
     with pytest.raises(ValueError):
-        JiraService("U1").search_issues("(*)")
+        JiraService("T1", "U1").search_issues("(*)")
     jira.request.assert_not_called()
 
 
@@ -344,7 +344,7 @@ def test_tc15_assigned_list_output_is_unchanged():
 # Async task and routing
 # --------------------------------------------------------------------------------------
 
-EVENT = {"_async_task": "search_issues", "slack_user_id": "U1", "keyword": "secret project name",
+EVENT = {"_async_task": "search_issues", "team_id": "T1", "slack_user_id": "U1", "keyword": "secret project name",
          "response_url": RESPONSE_URL}
 
 
@@ -359,7 +359,7 @@ def test_tc16_task_posts_results():
         RunSearchIssuesTask(dict(EVENT)).run()
 
     # Assert
-    service_cls.assert_called_once_with("U1")
+    service_cls.assert_called_once_with("T1", "U1")
     service_cls.return_value.search_issues.assert_called_once_with("secret project name")
     url, message = post.call_args.args
     assert url == RESPONSE_URL

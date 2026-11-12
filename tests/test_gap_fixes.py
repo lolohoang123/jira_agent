@@ -44,7 +44,7 @@ def transaction_cancelled(reasons):
 
 
 def new_approval():
-    return {"slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": dict(FORM)}
+    return {"team_id": "T1", "slack_user_id": OWNER, "channel_id": "C1", "action": "create_worklog", "form": dict(FORM)}
 
 
 # --------------------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def new_approval():
 ])
 def test_gap01_dedupe_key_ignores_formatting_and_description(variant):
     # Act & Assert
-    assert build_dedupe_key(OWNER, {**FORM, **variant}) == build_dedupe_key(OWNER, FORM)
+    assert build_dedupe_key("T1", OWNER, {**FORM, **variant}) == build_dedupe_key("T1", OWNER, FORM)
 
 
 @pytest.mark.parametrize("variant", [
@@ -64,12 +64,12 @@ def test_gap01_dedupe_key_ignores_formatting_and_description(variant):
 ])
 def test_gap01_dedupe_key_differs_for_different_worklogs(variant):
     # Act & Assert
-    assert build_dedupe_key(OWNER, {**FORM, **variant}) != build_dedupe_key(OWNER, FORM)
+    assert build_dedupe_key("T1", OWNER, {**FORM, **variant}) != build_dedupe_key("T1", OWNER, FORM)
 
 
 def test_gap01_dedupe_key_differs_per_user():
     # Act & Assert
-    assert build_dedupe_key("U_OTHER", FORM) != build_dedupe_key(OWNER, FORM)
+    assert build_dedupe_key("T1", "U_OTHER", FORM) != build_dedupe_key("T1", OWNER, FORM)
 
 
 def test_gap01_duplicate_request_raises_duplicate_error(repo, table):
@@ -80,7 +80,7 @@ def test_gap01_duplicate_request_raises_duplicate_error(repo, table):
     # Act & Assert
     with pytest.raises(DuplicateApprovalError) as exc_info:
         repo.create_pending(new_approval())
-    assert exc_info.value.dedupe_key == build_dedupe_key(OWNER, FORM)
+    assert exc_info.value.dedupe_key == build_dedupe_key("T1", OWNER, FORM)
 
 
 def test_gap01_other_transaction_failure_is_reraised(repo, table):
@@ -100,7 +100,7 @@ def test_gap01_reject_releases_dedupe_row(repo, table):
                                                      "status": "REJECTED"}}
 
     # Act
-    result = repo.reject(APPROVAL_ID, OWNER)
+    result = repo.reject(APPROVAL_ID, "T1", OWNER)
 
     # Assert
     assert result["status"] == "REJECTED"
@@ -115,7 +115,7 @@ def test_gap01_rejected_by_non_owner_keeps_dedupe_row(repo, table):
         {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
 
     # Act
-    result = repo.reject(APPROVAL_ID, "U_INTRUDER")
+    result = repo.reject(APPROVAL_ID, "T1", "U_INTRUDER")
 
     # Assert
     assert result is None
@@ -163,7 +163,7 @@ def test_gap02_post_failure_cancels_and_raises_delivery_error():
     with patch("approval.approval_service.slack_api", side_effect=RuntimeError("channel_not_found")):
         # Act & Assert
         with pytest.raises(ApprovalDeliveryError):
-            service.request_worklog_approval(OWNER, "C1", FORM)
+            service.request_worklog_approval("T1", OWNER, "C1", FORM)
     repo.cancel.assert_called_once_with(APPROVAL_ID, reason="Slack delivery failed: channel_not_found")
 
 
@@ -176,7 +176,7 @@ def test_gap02_cancel_failure_still_raises_delivery_error():
     with patch("approval.approval_service.slack_api", side_effect=RuntimeError("channel_not_found")):
         # Act & Assert
         with pytest.raises(ApprovalDeliveryError):
-            service.request_worklog_approval(OWNER, "C1", FORM)
+            service.request_worklog_approval("T1", OWNER, "C1", FORM)
 
 
 def test_gap02_cancel_moves_pending_to_cancelled_and_releases(repo, table):
@@ -216,7 +216,7 @@ def test_gap02_cancel_of_non_pending_returns_none(repo, table):
 )
 def test_gap02_modal_failures_notify_user_by_dm(error, status, expected_text):
     # Arrange
-    event = {"_async_task": "request_worklog_approval", "slack_user_id": OWNER,
+    event = {"_async_task": "request_worklog_approval", "team_id": "T1", "slack_user_id": OWNER,
              "channel_id": "C1", "form": FORM}
     with patch("approval.approval_service.ApprovalService") as service_cls, \
             patch("slack.slack_client.slack_api") as slack_api:
@@ -227,7 +227,8 @@ def test_gap02_modal_failures_notify_user_by_dm(error, status, expected_text):
 
     # Assert
     assert response["statusCode"] == status
-    method, payload = slack_api.call_args.args
+    method, payload, team_id = slack_api.call_args.args
+    assert team_id == "T1"
     assert method == "chat.postMessage"
     assert payload["channel"] == OWNER
     assert expected_text in payload["text"]
@@ -236,7 +237,7 @@ def test_gap02_modal_failures_notify_user_by_dm(error, status, expected_text):
 
 def test_gap02_dm_failure_does_not_raise():
     # Arrange
-    event = {"_async_task": "request_worklog_approval", "slack_user_id": OWNER,
+    event = {"_async_task": "request_worklog_approval", "team_id": "T1", "slack_user_id": OWNER,
              "channel_id": "C1", "form": FORM}
     with patch("approval.approval_service.ApprovalService") as service_cls, \
             patch("slack.slack_client.slack_api", side_effect=RuntimeError("Slack down")):
@@ -263,7 +264,7 @@ def test_gap02_agent_path_returns_message_instead_of_failing(error, expected_tex
         service_cls.return_value.request_worklog_approval.side_effect = error
 
         # Act
-        outcome = execute_plan(plan, OWNER, "C1")
+        outcome = execute_plan(plan, "T1", OWNER, "C1")
 
     # Assert
     assert outcome["intent"] == "unknown"
@@ -382,7 +383,7 @@ def test_review1_slack_timeout_keeps_approval_pending(error):
     service = ApprovalService(repo)
     with patch("approval.approval_service.slack_api", side_effect=error):
         # Act
-        item = service.request_worklog_approval(OWNER, "C1", FORM)
+        item = service.request_worklog_approval("T1", OWNER, "C1", FORM)
 
     # Assert
     assert item["approval_id"] == APPROVAL_ID
@@ -401,7 +402,7 @@ def test_review1_definite_slack_failure_cancels(error):
     with patch("approval.approval_service.slack_api", side_effect=error):
         # Act & Assert
         with pytest.raises(ApprovalDeliveryError):
-            service.request_worklog_approval(OWNER, "C1", FORM)
+            service.request_worklog_approval("T1", OWNER, "C1", FORM)
     repo.cancel.assert_called_once()
 
 
@@ -427,7 +428,7 @@ def test_review2_jira_failure_releases_but_post_jira_failure_does_not():
 
         # Act
         with pytest.raises(RuntimeError):
-            service.approve_and_execute(APPROVAL_ID, OWNER)
+            service.approve_and_execute("T1", APPROVAL_ID, OWNER)
 
     # Assert
     assert repo.finish.call_args.kwargs["release"] is True

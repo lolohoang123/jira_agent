@@ -38,5 +38,6 @@ A Slack bot (`/jira-agent`) that lets users connect Jira via Atlassian OAuth 2.0
 - Token expiry is stored as Unix seconds; reads must stay backward-compatible with old millisecond values.
 - DynamoDB TTL attributes: `ttl` on `APPROVALS_TABLE`, `expiresAt` on `OAUTH_STATES_TABLE`.
 - Build Jira issue links from the user's stored `jiraSiteUrl`, not a global URL.
-- One Jira site per Slack user; reconnecting replaces the previous connection.
+- Multi-workspace: every Slack identity is (`team_id`, `slack_user_id`) – Jira connections, approvals (owner check), dedupe keys, rate limits and OAuth states all carry `team_id`. Call Slack with `slack_api(method, payload, team_id)` (bot token from the installations table); never assume one global bot token.
+- One Jira site per Slack user (per workspace); reconnecting replaces the previous connection.
 - Inject clients (Bedrock, DynamoDB, Jira) so tests can use fakes/mocks; tests must not hit real AWS, Slack or Jira.

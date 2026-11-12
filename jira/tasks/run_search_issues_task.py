@@ -17,7 +17,7 @@ class RunSearchIssuesTask:
         url = self.event["response_url"]
         keyword = self.event["keyword"]
         try:
-            service = JiraService(self.event["slack_user_id"])
+            service = JiraService(self.event["team_id"], self.event["slack_user_id"])
             issues = service.search_issues(keyword)
             post_slack_response(url, {"response_type": "ephemeral", "replace_original": True,
                                       "text": "Jira tickets matching your search",

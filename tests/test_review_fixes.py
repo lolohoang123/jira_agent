@@ -45,7 +45,7 @@ def test_assigned_blocks_use_timespent_without_jira_calls(timespent, expected):
 
 def test_request_worklog_approval_failure_is_not_raised():
     # Arrange
-    event = {"_async_task": "request_worklog_approval", "slack_user_id": "U1",
+    event = {"_async_task": "request_worklog_approval", "team_id": "T1", "slack_user_id": "U1",
              "channel_id": "C1", "form": {"issue_key": "PROJ-1"}}
     with patch("approval.approval_service.ApprovalService") as service_cls:
         service_cls.return_value.request_worklog_approval.side_effect = RuntimeError("Slack down")
@@ -55,13 +55,13 @@ def test_request_worklog_approval_failure_is_not_raised():
 
     # Assert
     assert response["statusCode"] == 500
-    service_cls.return_value.request_worklog_approval.assert_called_once_with(
+    service_cls.return_value.request_worklog_approval.assert_called_once_with("T1", 
         "U1", "C1", {"issue_key": "PROJ-1"})
 
 
 def test_agent_request_failure_is_not_raised():
     # Arrange
-    event = {"_async_task": "agent_request", "slack_user_id": "U1", "channel_id": "C1",
+    event = {"_async_task": "agent_request", "team_id": "T1", "slack_user_id": "U1", "channel_id": "C1",
              "text": "list my tickets", "response_url": "https://hooks.slack.com/x"}
     with patch("agent.orchestrator.AgentOrchestrator") as orchestrator_cls, \
             patch("slack.slack_client.post_slack_response", side_effect=RuntimeError("timeout")) as post:
@@ -78,7 +78,7 @@ def test_agent_request_failure_is_not_raised():
 
 def test_agent_request_success_posts_reply():
     # Arrange
-    event = {"_async_task": "agent_request", "slack_user_id": "U1", "channel_id": "C1",
+    event = {"_async_task": "agent_request", "team_id": "T1", "slack_user_id": "U1", "channel_id": "C1",
              "text": "list my tickets", "response_url": "https://hooks.slack.com/x"}
     with patch("agent.orchestrator.AgentOrchestrator") as orchestrator_cls, \
             patch("slack.slack_client.post_slack_response") as post:

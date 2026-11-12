@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 
 class JiraClient:
     """Thin Jira REST client. It never receives raw credentials from callers."""
-    def __init__(self, slack_user_id):
+    def __init__(self, team_id, slack_user_id):
+        self.team_id = team_id
         self.slack_user_id = slack_user_id
-        self.credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials(slack_user_id)
+        self.credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials(team_id, slack_user_id)
 
     @property
     def cloud_id(self):

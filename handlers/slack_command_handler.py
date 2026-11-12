@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 
 from handlers.slack_action_handler import handle_block_actions, handle_view_submission
 from jira.authentication_jira import AuthenticationJira
+from slack.installation_store import InstallationStore
 from util.common import json_response
 from jira.jira_service import MAX_KEYWORD_LENGTH, jql_text_terms
 from util.config import AGENT_DISABLED_MESSAGE, agent_enabled, get_secret
@@ -35,18 +36,19 @@ def parse_search_command(text):
     return None
 
 
-def _start_search(keyword, slack_user_id, response_url, context, lambda_client):
+def _start_search(keyword, team_id, slack_user_id, response_url, context, lambda_client):
     """/jira-agent logwork find <keyword>: validate, check the connection, search asynchronously."""
     if not jql_text_terms(keyword):
         return json_response(200, {"response_type": "ephemeral", "text": SEARCH_USAGE})
     try:
-        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
+        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
     except Exception:
         return json_response(200, {"response_type": "ephemeral",
                                    "text": "Your Jira account is not connected. Run `/jira-agent connect` first."})
     task = {
         "_async_task": "search_issues",
         "_task_secret": get_secret("ASYNC_TASK_SECRET"),
+        "team_id": team_id,
         "slack_user_id": slack_user_id,
         "keyword": keyword[:MAX_KEYWORD_LENGTH],
         "response_url": response_url,
@@ -56,10 +58,17 @@ def _start_search(keyword, slack_user_id, response_url, context, lambda_client):
     return json_response(200, {"response_type": "ephemeral", "text": "Searching Jira tickets..."})
 
 
-def _disconnect(slack_user_id):
+def not_installed_message():
+    """Shown when the workspace has no Slack OAuth installation (e.g. before reinstalling via OAuth)."""
+    install_url = os.environ.get("SLACK_INSTALL_URL", "")
+    where = f" <{install_url}|Install the app>" if install_url else " Ask your Slack admin to install the app."
+    return "This Slack workspace hasn't installed the Jira app yet." + where
+
+
+def _disconnect(team_id, slack_user_id):
     """Delete the user's Jira connection and stored tokens (spec gap GAP-04)."""
     try:
-        removed = DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user(slack_user_id)
+        removed = DynamoHelper("OAUTH_USERS_TABLE").disconnect_slack_user(team_id, slack_user_id)
     except Exception:
         logger.exception("Could not disconnect Jira for Slack user %s", slack_user_id)
         return json_response(200, {"response_type": "ephemeral",
@@ -86,6 +95,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
     command = data.get("command", [""])[0]
     text = " ".join(data.get("text", [""])[0].split())  # preserve original casing for the LLM
     normalized = text.lower()
+    team_id = data.get("team_id", [""])[0]
     slack_user_id = data.get("user_id", [""])[0]
     channel_id = data.get("channel_id", [""])[0]
     response_url = data.get("response_url", [""])[0]
@@ -94,26 +104,32 @@ def handle_slack_request(event, context, raw_body, lambda_client):
         return json_response(200, {"response_type": "ephemeral", "text": "Use `/jira-agent` to ask Jira."})
     if not _valid_response_url(response_url):
         return json_response(400, {"error": "invalid response_url"})
+    if not team_id or not slack_user_id:
+        return json_response(400, {"error": "missing team_id or user_id"})
+    # Everything below needs this workspace's bot token (DMs, modals) or is scoped to it.
+    if not InstallationStore().is_installed(team_id):
+        return json_response(200, {"response_type": "ephemeral", "text": not_installed_message()})
 
     if normalized == "connect":
-        return AuthenticationJira({}).build_connect_response(slack_user_id)
+        return AuthenticationJira({}).build_connect_response(team_id, slack_user_id)
     if normalized == "disconnect":
-        return _disconnect(slack_user_id)
+        return _disconnect(team_id, slack_user_id)
 
     keyword = parse_search_command(text)
     if keyword is not None:
-        return _start_search(keyword, slack_user_id, response_url, context, lambda_client)
+        return _start_search(keyword, team_id, slack_user_id, response_url, context, lambda_client)
 
     supported = {"logwork today", "list"}
     if normalized not in supported:
         if not agent_enabled():
             # Checked before the rate limit and the async invoke: no Bedrock call, no counter used.
             return json_response(200, {"response_type": "ephemeral", "text": AGENT_DISABLED_MESSAGE})
-        if not agent_request_allowed(slack_user_id):
+        if not agent_request_allowed(team_id, slack_user_id):
             return json_response(200, {"response_type": "ephemeral", "text": agent_limit_message()})
         task = {
             "_async_task": "agent_request",
             "_task_secret": get_secret("ASYNC_TASK_SECRET"),
+            "team_id": team_id,
             "slack_user_id": slack_user_id,
             "channel_id": channel_id,
             "text": text,
@@ -127,7 +143,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
         return json_response(200, {"response_type": "ephemeral", "text": "I'm processing your Jira request..."})
 
     try:
-        account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
+        account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
     except Exception:
         return json_response(200, {"response_type": "ephemeral", "text": "Your Jira account is not connected. Run `/jira-agent connect` first."})
 
@@ -135,6 +151,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
     task = {
         "_async_task": task_type,
         "_task_secret": get_secret("ASYNC_TASK_SECRET"),
+        "team_id": team_id,
         "slack_user_id": slack_user_id,
         "account_id": account_id,
         "response_url": response_url,

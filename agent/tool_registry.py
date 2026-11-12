@@ -46,7 +46,7 @@ def _validate_worklog_form(parameters):
     return form
 
 
-def execute_plan(plan, slack_user_id, channel_id):
+def execute_plan(plan, team_id, slack_user_id, channel_id):
     """Validate the model plan and execute exactly one allow-listed operation."""
     if not isinstance(plan, dict):
         raise ValueError("Agent plan must be an object.")
@@ -71,9 +71,9 @@ def execute_plan(plan, slack_user_id, channel_id):
                 "message": f"I need a little more information before preparing the worklog: {exc}",
             }
         # Ensure this Slack user has linked a Jira account before creating an approval.
-        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
+        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
         try:
-            approval = ApprovalService().request_worklog_approval(slack_user_id, channel_id, form)
+            approval = ApprovalService().request_worklog_approval(team_id, slack_user_id, channel_id, form)
         except DuplicateApprovalError:
             return {"intent": "unknown", "message": duplicate_approval_message(form)}
         except ApprovalDeliveryError:
@@ -81,8 +81,8 @@ def execute_plan(plan, slack_user_id, channel_id):
         return {"intent": intent, "approval_id": approval["approval_id"]}
 
     # Resolve the Jira account mapping before any read operation.
-    account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(slack_user_id)
-    service = JiraService(slack_user_id)
+    account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
+    service = JiraService(team_id, slack_user_id)
 
     if intent == "list_assigned_issues":
         return {"intent": intent, "data": service.find_assigned_issues(account_id)}

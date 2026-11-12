@@ -56,8 +56,8 @@ class RateLimiter:
             return True
 
 
-def agent_request_allowed(slack_user_id, limiter=None):
-    return (limiter or RateLimiter()).allow(f"agent#{slack_user_id}", agent_limit_per_hour())
+def agent_request_allowed(team_id, slack_user_id, limiter=None):
+    return (limiter or RateLimiter()).allow(f"agent#{team_id}#{slack_user_id}", agent_limit_per_hour())
 
 
 def agent_limit_message():

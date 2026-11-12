@@ -53,7 +53,7 @@ def _send(fn):
 def test_create_pending_sends_typed_values_once(real_table):
     # Arrange
     repo = ApprovalRepository(table=real_table)
-    approval = {"slack_user_id": "U1", "channel_id": "C1", "action": "create_worklog", "form": FORM}
+    approval = {"team_id": "T1", "slack_user_id": "U1", "channel_id": "C1", "action": "create_worklog", "form": FORM}
 
     # Act
     sent = _send(lambda: repo.create_pending(approval))
@@ -74,8 +74,8 @@ def test_create_pending_sends_typed_values_once(real_table):
 
 
 @pytest.mark.parametrize("call", [
-    lambda repo: repo.claim("a-1", "U1"),
-    lambda repo: repo.reject("a-1", "U1"),
+    lambda repo: repo.claim("a-1", "T1", "U1"),
+    lambda repo: repo.reject("a-1", "T1", "U1"),
     lambda repo: repo.cancel("a-1", reason="x"),
     lambda repo: repo.finish("a-1", "APPROVED_EXECUTED"),
     lambda repo: repo.release_dedupe({"approval_id": "a-1", "dedupe_key": "abc"}),
@@ -105,7 +105,7 @@ def test_duplicate_is_detected_from_real_cancellation_response(real_table):
         response_meta={},
         modeled_fields={"CancellationReasons": [{"Code": "None"}, {"Code": "ConditionalCheckFailed"}]},
     )
-    approval = {"slack_user_id": "U1", "channel_id": "C1", "action": "create_worklog", "form": FORM}
+    approval = {"team_id": "T1", "slack_user_id": "U1", "channel_id": "C1", "action": "create_worklog", "form": FORM}
 
     # Act & Assert
     with stubber, pytest.raises(DuplicateApprovalError):

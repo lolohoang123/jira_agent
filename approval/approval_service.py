@@ -14,8 +14,8 @@ SITE_CHANGED_MESSAGE = ("Your Jira connection now points to a different Jira sit
                         "requested, so nothing was logged. Submit the worklog again if you still need it.")
 
 
-def current_jira_cloud_id(slack_user_id):
-    return DynamoHelper("OAUTH_USERS_TABLE").get_jira_cloud_id_for_slack_user(slack_user_id)
+def current_jira_cloud_id(team_id, slack_user_id):
+    return DynamoHelper("OAUTH_USERS_TABLE").get_jira_cloud_id_for_slack_user(team_id, slack_user_id)
 
 
 class ApprovalDeliveryError(Exception):
@@ -73,7 +73,7 @@ class ApprovalService:
         self.repository = repository or ApprovalRepository()
         self._cloud_id_resolver = cloud_id_resolver
 
-    def request_worklog_approval(self, slack_user_id, channel_id, form):
+    def request_worklog_approval(self, team_id, slack_user_id, channel_id, form):
         """Create a PENDING approval and post its Approve/Reject message.
 
         Raises DuplicateApprovalError for an identical pending/recently approved worklog, and
@@ -81,16 +81,17 @@ class ApprovalService:
         """
         resolve = self._cloud_id_resolver or current_jira_cloud_id
         item = self.repository.create_pending({
+            "team_id": team_id,
             "slack_user_id": slack_user_id,
             "channel_id": channel_id,
             "action": "create_worklog",
             "form": form,
-            "jira_cloud_id": resolve(slack_user_id),
+            "jira_cloud_id": resolve(team_id, slack_user_id),
         })
         # DM by default: the issue, duration and description stay private to the requester.
         target = slack_user_id if approval_delivery_mode() == "dm" else channel_id
         try:
-            self._post_approval_message(item, target, form)
+            self._post_approval_message(item, team_id, target, form)
         except Exception as exc:
             if _delivery_unconfirmed(exc):
                 # Slack may have posted it anyway: keep the approval PENDING (it expires in 24 h) rather than
@@ -107,7 +108,7 @@ class ApprovalService:
         return item
 
     @staticmethod
-    def _post_approval_message(item, channel_id, form):
+    def _post_approval_message(item, team_id, channel_id, form):
         key = slack_escape(form["issue_key"])
         duration = slack_escape(form["duration"])
         description = slack_escape(form.get("description") or "—")
@@ -125,17 +126,17 @@ class ApprovalService:
                      "text": {"type": "plain_text", "text": "Reject"}, "value": item["approval_id"]},
                 ]},
             ],
-        })
+        }, team_id)
 
-    def approve_and_execute(self, approval_id, slack_user_id):
-        item = self.repository.claim(approval_id, slack_user_id)
+    def approve_and_execute(self, team_id, approval_id, slack_user_id):
+        item = self.repository.claim(approval_id, team_id, slack_user_id)
         if not item:
             return {"ok": False, "message": "This approval is expired, already handled, or does not belong to you."}
         jira_written = False
         try:
             if item["action"] != "create_worklog":
                 raise ValueError("Unsupported approved action")
-            jira = JiraService(slack_user_id)
+            jira = JiraService(team_id, slack_user_id)
             expected_site = item.get("jira_cloud_id")
             # Compare with the credentials this JiraService will write with, so a reconnect cannot slip in
             # between the check and the write. Rows created before SC-01 have no site and are not checked.
@@ -157,5 +158,5 @@ class ApprovalService:
                 logger.exception("Could not mark approval %s as EXECUTION_FAILED", approval_id)
             raise
 
-    def reject(self, approval_id, slack_user_id):
-        return self.repository.reject(approval_id, slack_user_id)
+    def reject(self, team_id, approval_id, slack_user_id):
+        return self.repository.reject(approval_id, team_id, slack_user_id)

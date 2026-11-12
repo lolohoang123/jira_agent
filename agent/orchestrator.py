@@ -17,11 +17,11 @@ class AgentOrchestrator:
     def __init__(self, llm_client=None):
         self.llm = llm_client or BedrockLLMClient()
 
-    def handle(self, slack_user_id: str, text: str, channel_id: str = "") -> AgentResult:
+    def handle(self, slack_user_id: str, text: str, channel_id: str = "", team_id: str = "") -> AgentResult:
         text = (text or "").strip()
         if not text:
             return AgentResult("Tell me what Jira information you need.")
-        if not slack_user_id or not channel_id:
+        if not slack_user_id or not channel_id or not team_id:
             return AgentResult("I couldn't identify the Slack user or channel for this request.")
         tz_name = os.environ.get("JIRA_TIMEZONE", "Asia/Ho_Chi_Minh")
         now = datetime.now(ZoneInfo(tz_name))
@@ -33,7 +33,7 @@ class AgentOrchestrator:
         )
         try:
             plan = self.llm.generate_plan(AGENT_INSTRUCTIONS, context)
-            outcome = execute_plan(plan, slack_user_id, channel_id)
+            outcome = execute_plan(plan, team_id, slack_user_id, channel_id)
             return AgentResult(self._format_outcome(outcome))
         except Exception:
             logger.exception("Agent request failed for Slack user %s", slack_user_id)

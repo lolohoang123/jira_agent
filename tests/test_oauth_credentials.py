@@ -145,18 +145,18 @@ def test_tc05_account_id_for_connected_user(table):
     table.get_item.return_value = {"Item": {"jiraAccountId": "acc-1"}}
 
     # Act
-    account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user("U1")
+    account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user("T1", "U1")
 
     # Assert
     assert account_id == "acc-1"
-    table.get_item.assert_called_once_with(Key={"slack_user_id": "U1"},
+    table.get_item.assert_called_once_with(Key={"team_id": "T1", "slack_user_id": "U1"},
                                            ProjectionExpression="jiraAccountId, #connected",
                                            ExpressionAttributeNames={"#connected": "connected"},
                                            ConsistentRead=True)
 
 
 @pytest.mark.parametrize("user,response,message", [
-    ("", None, "Could not identify the Slack user"),
+    ("", None, "Could not identify the Slack workspace and user"),
     ("U1", {}, "not connected"),
     ("U1", {"Item": {}}, "not connected"),
     ("U1", {"Item": {"jiraAccountId": ""}}, "not connected"),
@@ -167,7 +167,7 @@ def test_tc06_account_id_errors(table, user, response, message):
 
     # Act & Assert
     with pytest.raises(ValueError, match=message):
-        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(user)
+        DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user("T1", user)
     if not user:
         table.get_item.assert_not_called()
 
@@ -176,12 +176,13 @@ def test_tc07_authorization_url_stores_one_time_state(table, clock):
     # Arrange
     with patch.object(dynamo_helper.secrets, "token_urlsafe", return_value="state-123") as token:
         # Act
-        url = DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url("U1")
+        url = DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url("T1", "U1")
 
     # Assert
     token.assert_called_once_with(32)
     table.put_item.assert_called_once_with(
-        Item={"state": "state-123", "slackUserId": "U1", "createdAt": NOW, "expiresAt": NOW + 600},
+        Item={"state": "state-123", "kind": "jira", "createdAt": NOW, "expiresAt": NOW + 600,
+              "teamId": "T1", "slackUserId": "U1"},
         ConditionExpression="attribute_not_exists(#state)", ExpressionAttributeNames={"#state": "state"})
     parsed = urllib.parse.urlparse(url)
     assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://auth.atlassian.com/authorize"
@@ -195,25 +196,27 @@ def test_tc07_authorization_url_stores_one_time_state(table, clock):
 def test_tc08_authorization_url_requires_user(table):
     # Act & Assert
     with pytest.raises(ValueError):
-        DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url("")
+        DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url("T1", "")
     table.put_item.assert_not_called()
 
 
 def test_tc09_consume_valid_state(table, clock):
     # Arrange
-    table.update_item.return_value = {"Attributes": {"state": "state-123", "slackUserId": "U1"}}
+    table.update_item.return_value = {"Attributes": {"state": "state-123", "kind": "jira",
+                                                     "teamId": "T1", "slackUserId": "U1"}}
 
     # Act
-    user_id = DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state("state-123")
+    identity = DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state("state-123")
 
     # Assert
-    assert user_id == "U1"
+    assert identity == ("T1", "U1")
     kwargs = table.update_item.call_args.kwargs
     assert kwargs["Key"] == {"state": "state-123"}
     assert kwargs["UpdateExpression"] == "SET consumedAt = :now"
     assert kwargs["ConditionExpression"] == (
-        "attribute_exists(#state) AND attribute_not_exists(consumedAt) AND expiresAt > :now")
-    assert kwargs["ExpressionAttributeValues"] == {":now": NOW}
+        "attribute_exists(#state) AND attribute_not_exists(consumedAt) AND expiresAt > :now AND #kind = :kind")
+    # A Slack install state can never be used to connect Jira, and vice versa.
+    assert kwargs["ExpressionAttributeValues"] == {":now": NOW, ":kind": "jira"}
 
 
 def test_tc10_expired_or_reused_state_is_rejected(table, clock):
@@ -265,13 +268,13 @@ def test_tc14_valid_token_is_returned_without_refresh(table, clock):
     helper = DynamoHelper("OAUTH_USERS_TABLE")
     with patch.object(DynamoHelper, "refresh_access_token") as refresh:
         # Act
-        credentials = helper.get_oauth_credentials("U1")
+        credentials = helper.get_oauth_credentials("T1", "U1")
 
     # Assert
     assert credentials == {"access_token": ACCESS, "cloud_id": "cloud-1",
                            "jira_site_url": "https://acme.atlassian.net"}
     refresh.assert_not_called()
-    table.get_item.assert_called_once_with(Key={"slack_user_id": "U1"}, ConsistentRead=True)
+    table.get_item.assert_called_once_with(Key={"team_id": "T1", "slack_user_id": "U1"}, ConsistentRead=True)
 
 
 @pytest.mark.parametrize("expires_at,refreshed", [
@@ -284,7 +287,7 @@ def test_tc15_tc16_refresh_threshold_is_60_seconds(table, clock, expires_at, ref
     table.get_item.return_value = {"Item": user_row(expires_at=expires_at)}
     with patch.object(DynamoHelper, "refresh_access_token", return_value=user_row(accessToken=NEW_ACCESS)) as refresh:
         # Act
-        credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("U1")
+        credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
 
     # Assert
     assert refresh.called is refreshed
@@ -302,7 +305,7 @@ def test_tc17_unknown_or_disconnected_user_is_rejected(table, clock, user, respo
 
     # Act & Assert
     with pytest.raises(error):
-        DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials(user)
+        DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", user)
 
 
 def test_tc17_missing_connected_flag_counts_as_connected(table, clock):
@@ -312,7 +315,7 @@ def test_tc17_missing_connected_flag_counts_as_connected(table, clock):
     table.get_item.return_value = {"Item": row}
 
     # Act & Assert
-    assert DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("U1")["access_token"] == ACCESS
+    assert DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")["access_token"] == ACCESS
 
 
 @pytest.mark.parametrize("missing", ["accessToken", "jiraCloudId"])
@@ -322,7 +325,7 @@ def test_tc18_incomplete_record_is_rejected(table, clock, missing):
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="missing access token or cloud ID") as exc_info:
-        DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
     assert_no_secrets(exception_text(exc_info.value))
 
 
@@ -332,10 +335,10 @@ def test_tc19_expired_token_is_refreshed(table, clock):
     fresh = user_row(accessToken=NEW_ACCESS, expires_at=NOW + 3600)
     with patch.object(DynamoHelper, "refresh_access_token", return_value=fresh) as refresh:
         # Act
-        credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("U1")
+        credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
 
     # Assert
-    refresh.assert_called_once_with("U1")
+    refresh.assert_called_once_with("T1", "U1")
     assert credentials["access_token"] == NEW_ACCESS
 
 
@@ -372,7 +375,7 @@ def test_tc20_refresh_stores_new_tokens_and_releases_lock(table, clock, owner, u
         {"access_token": NEW_ACCESS, "refresh_token": NEW_REFRESH, "expires_in": 3600}))
 
     # Act
-    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
     # Assert
     assert result == fresh
@@ -396,7 +399,7 @@ def test_tc21_refresh_keeps_old_refresh_token_when_not_rotated(table, clock, own
     urlopen.return_value = http_response(json.dumps({"access_token": NEW_ACCESS, "expires_in": 3600}))
 
     # Act
-    DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+    DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
     # Assert
     assert table.update_item.call_args_list[1].kwargs["ExpressionAttributeValues"][":r"] == REFRESH
@@ -407,7 +410,7 @@ def test_tc22_already_refreshed_token_skips_atlassian(table, clock, owner, urlop
     table.get_item.return_value = {"Item": user_row(expires_at=NOW + 3600)}
 
     # Act
-    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
     # Assert
     assert result["accessToken"] == ACCESS
@@ -420,7 +423,7 @@ def test_tc23_waits_for_other_refresh_then_uses_its_token(table, clock, owner, u
     table.get_item.return_value = {"Item": user_row(accessToken=NEW_ACCESS, expires_at=NOW + 3600)}
 
     # Act
-    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+    result = DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
     # Assert
     assert result["accessToken"] == NEW_ACCESS
@@ -436,7 +439,7 @@ def test_tc24_gives_up_after_deadline(table, clock, owner, urlopen):
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="please retry"):
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
     clock.sleep.assert_called_once_with(0.5)
     assert table.update_item.call_count == 2
     urlopen.assert_not_called()
@@ -449,7 +452,7 @@ def test_tc25_record_deleted_while_waiting(table, clock, owner, urlopen):
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="not found"):
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
 
 def test_tc26_unexpected_lock_error_is_reraised(table, clock, owner, urlopen):
@@ -459,7 +462,7 @@ def test_tc26_unexpected_lock_error_is_reraised(table, clock, owner, urlopen):
 
     # Act & Assert
     with pytest.raises(ClientError) as exc_info:
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
     assert exc_info.value is error
     table.get_item.assert_not_called()
 
@@ -470,10 +473,10 @@ def test_tc27_missing_refresh_token_releases_lock(table, clock, owner, urlopen):
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="reconnect"):
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
     urlopen.assert_not_called()
     assert release_calls(table) == [{
-        "Key": {"slack_user_id": "U1"}, "UpdateExpression": "REMOVE refreshLockOwner, refreshLockUntil",
+        "Key": {"team_id": "T1", "slack_user_id": "U1"}, "UpdateExpression": "REMOVE refreshLockOwner, refreshLockUntil",
         "ConditionExpression": "refreshLockOwner = :owner", "ExpressionAttributeValues": {":owner": "owner-1"}}]
 
 
@@ -492,7 +495,7 @@ def test_tc28_tc29_atlassian_failure_releases_lock_without_leaking(table, clock,
 
     # Act & Assert
     with pytest.raises(RuntimeError, match=message) as exc_info:
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
     assert len(release_calls(table)) == 1
     assert_no_secrets(exception_text(exc_info.value))
     if isinstance(failure, urllib.error.HTTPError):
@@ -507,7 +510,7 @@ def test_tc30_incomplete_token_response_stores_nothing(table, clock, owner, urlo
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="missing access_token or expires_in"):
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
     stored = [c for c in table.update_item.call_args_list if ":a" in c.kwargs.get("ExpressionAttributeValues", {})]
     assert stored == []
     assert len(release_calls(table)) == 1
@@ -521,7 +524,7 @@ def test_tc31_release_failure_keeps_original_error(table, clock, owner, urlopen)
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="Could not reach Atlassian"):
-        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("U1")
+        DynamoHelper("OAUTH_USERS_TABLE").refresh_access_token("T1", "U1")
 
 
 # --------------------------------------------------------------------------------------
@@ -584,7 +587,7 @@ def test_tc36_no_site_is_an_error(resources):
 def helpers():
     """Separate fakes for the states table and the users table."""
     fakes = {"OAUTH_STATES_TABLE": MagicMock(name="states"), "OAUTH_USERS_TABLE": MagicMock(name="users")}
-    fakes["OAUTH_STATES_TABLE"].consume_oauth_state.return_value = "U1"
+    fakes["OAUTH_STATES_TABLE"].consume_oauth_state.return_value = ("T1", "U1")
     with patch.object(auth_module, "DynamoHelper", side_effect=lambda name: fakes[name]):
         yield fakes
 
@@ -664,9 +667,9 @@ def test_tc40_valid_callback_stores_connection(helpers, atlassian, caplog):
 
     # Assert
     assert response["statusCode"] == 200 and "Connected to Acme" in response["body"]
-    helpers["OAUTH_STATES_TABLE"].consume_oauth_state.assert_called_once_with("state-123")
+    helpers["OAUTH_STATES_TABLE"].consume_oauth_state.assert_called_once_with("state-123", kind="jira")
     assert stored_record(helpers) == {
-        "slack_user_id": "U1", "jiraAccountId": "acc-1", "jiraCloudId": "cloud-1",
+        "team_id": "T1", "slack_user_id": "U1", "jiraAccountId": "acc-1", "jiraCloudId": "cloud-1",
         "jiraSiteUrl": "https://acme.atlassian.net", "jiraSiteName": "Acme",
         "accessToken": ACCESS, "refreshToken": REFRESH, "accessTokenExpiresAt": NOW + 3600,
         "accessTokenExpiresAtIso": "2023-11-14T23:13:20Z", "scope": "read:jira-work", "connected": True,
@@ -776,7 +779,7 @@ def test_tc47_connect_response(helpers, fails):
         states.create_oauth_authorization_url.return_value = "https://auth.atlassian.com/authorize?state=s"
 
     # Act
-    response = AuthenticationJira({}).build_connect_response("U1")
+    response = AuthenticationJira({}).build_connect_response("T1", "U1")
 
     # Assert
     body = json.loads(response["body"])
@@ -786,7 +789,7 @@ def test_tc47_connect_response(helpers, fails):
     else:
         assert "<https://auth.atlassian.com/authorize?state=s|*Connect Jira*>" in body["text"]
         assert "expires in 10 minutes" in body["text"] and "only be used once" in body["text"]
-    states.create_oauth_authorization_url.assert_called_once_with("U1")
+    states.create_oauth_authorization_url.assert_called_once_with("T1", "U1")
 
 
 # --------------------------------------------------------------------------------------
@@ -812,11 +815,11 @@ def jira_urlopen():
 
 def test_tc48_client_loads_credentials_for_user(credentials_store):
     # Act
-    client = JiraClient("U1")
+    client = JiraClient("T1", "U1")
 
     # Assert
     credentials_store.assert_called_once_with("OAUTH_USERS_TABLE")
-    credentials_store.return_value.get_oauth_credentials.assert_called_once_with("U1")
+    credentials_store.return_value.get_oauth_credentials.assert_called_once_with("T1", "U1")
     assert client.slack_user_id == "U1"
 
 
@@ -832,7 +835,7 @@ def test_tc49_site_url_prefers_the_users_site(credentials_store, monkeypatch, si
         monkeypatch.setenv("JIRA_BASE_URL", env_url)
 
     # Act & Assert
-    assert JiraClient("U1").site_url == expected
+    assert JiraClient("T1", "U1").site_url == expected
 
 
 @pytest.mark.parametrize("path,params,expected_url", [
@@ -843,7 +846,7 @@ def test_tc49_site_url_prefers_the_users_site(credentials_store, monkeypatch, si
 ])
 def test_tc50_get_builds_url(credentials_store, jira_urlopen, path, params, expected_url):
     # Act
-    result = JiraClient("U1").request(path, params=params)
+    result = JiraClient("T1", "U1").request(path, params=params)
 
     # Assert
     assert result == {"ok": True}
@@ -854,7 +857,7 @@ def test_tc50_get_builds_url(credentials_store, jira_urlopen, path, params, expe
 
 def test_tc51_post_sends_json_with_bearer_token(credentials_store, jira_urlopen):
     # Act
-    JiraClient("U1").request("/rest/api/3/issue/PROJ-1/worklog", method="post", data={"timeSpent": "1h"})
+    JiraClient("T1", "U1").request("/rest/api/3/issue/PROJ-1/worklog", method="post", data={"timeSpent": "1h"})
 
     # Assert
     request = jira_urlopen.call_args.args[0]
@@ -870,7 +873,7 @@ def test_tc52_empty_response_body_is_empty_dict(credentials_store, jira_urlopen)
     jira_urlopen.return_value = http_response(b"")
 
     # Act & Assert
-    assert JiraClient("U1").request("/rest/x", method="DELETE") == {}
+    assert JiraClient("T1", "U1").request("/rest/x", method="DELETE") == {}
 
 
 def test_tc53_http_error_includes_short_body_and_safe_log(credentials_store, jira_urlopen, caplog):
@@ -880,7 +883,7 @@ def test_tc53_http_error_includes_short_body_and_safe_log(credentials_store, jir
 
     # Act & Assert
     with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError) as exc_info:
-        JiraClient("U1").request("/rest/api/3/issue/NOPE-1")
+        JiraClient("T1", "U1").request("/rest/api/3/issue/NOPE-1")
     assert str(exc_info.value) == "Jira API returned HTTP 404: " + "e" * 300
     assert "HTTP 404 for Slack user U1" in caplog.text
     assert_no_secrets(caplog.text, str(exc_info.value))
@@ -892,4 +895,4 @@ def test_tc54_network_error(credentials_store, jira_urlopen):
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="Unable to connect to Jira API"):
-        JiraClient("U1").request("/rest/x")
+        JiraClient("T1", "U1").request("/rest/x")

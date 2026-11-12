@@ -46,6 +46,7 @@ def test_prepare_worklog_missing_start_time_requests_clarification(monkeypatch):
                 "duration": "1h",
             },
         },
+        "T123",
         "U123",
         "C123",
     )

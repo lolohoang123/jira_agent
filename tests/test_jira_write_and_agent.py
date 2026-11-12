@@ -23,7 +23,6 @@ FORM = {"issue_key": "PROJ-12", "date": "2026-11-09", "start_time": "09:00", "du
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     monkeypatch.setenv("JIRA_TIMEZONE", "Asia/Ho_Chi_Minh")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.delenv("MAX_WORKLOG_MINUTES", raising=False)
 
 
@@ -46,7 +45,7 @@ def jira():
 
 
 def make_service(jira):
-    service = JiraService("U1")
+    service = JiraService("T1", "U1")
     assert service.client.request is jira
     return service
 
@@ -173,7 +172,7 @@ def assert_no_side_effects(deps):
 def test_tc11_plan_must_be_an_object(deps, plan):
     # Act & Assert
     with pytest.raises(ValueError, match="must be an object"):
-        execute_plan(plan, "U1", "C1")
+        execute_plan(plan, "T1", "U1", "C1")
     assert_no_side_effects(deps)
 
 
@@ -181,7 +180,7 @@ def test_tc11_plan_must_be_an_object(deps, plan):
 def test_tc12_intent_outside_allow_list_is_refused(deps, intent):
     # Act & Assert
     with pytest.raises(ValueError, match="not enabled"):
-        execute_plan({"intent": intent, "parameters": dict(FORM)}, "U1", "C1")
+        execute_plan({"intent": intent, "parameters": dict(FORM)}, "T1", "U1", "C1")
     assert_no_side_effects(deps)
 
 
@@ -195,14 +194,14 @@ def test_tc12_allow_list_is_exactly_the_documented_intents():
 def test_tc13_parameters_must_be_an_object(deps, parameters):
     # Act & Assert
     with pytest.raises(ValueError, match="parameters must be an object"):
-        execute_plan({"intent": "list_assigned_issues", "parameters": parameters}, "U1", "C1")
+        execute_plan({"intent": "list_assigned_issues", "parameters": parameters}, "T1", "U1", "C1")
     assert_no_side_effects(deps)
 
 
 @pytest.mark.parametrize("intent", ["clarify", "unknown"])
 def test_tc14_clarify_and_unknown_only_return_text(deps, intent):
     # Act
-    outcome = execute_plan({"intent": intent, "message": "Which issue?"}, "U1", "C1")
+    outcome = execute_plan({"intent": intent, "message": "Which issue?"}, "T1", "U1", "C1")
 
     # Assert
     assert outcome == {"intent": intent, "message": "Which issue?"}
@@ -217,22 +216,22 @@ def test_tc14_clarify_and_unknown_only_return_text(deps, intent):
 ])
 def test_tc15_message_defaults_and_limit(deps, intent, message, expected):
     # Act & Assert
-    assert execute_plan({"intent": intent, "message": message}, "U1", "C1")["message"] == expected
+    assert execute_plan({"intent": intent, "message": message}, "T1", "U1", "C1")["message"] == expected
 
 
 def test_tc16_prepare_worklog_checks_connection_then_requests_approval(deps):
     # Arrange
     order = []
-    deps.dynamo.return_value.get_jira_account_id_for_slack_user.side_effect = lambda u: order.append("connected")
+    deps.dynamo.return_value.get_jira_account_id_for_slack_user.side_effect = lambda t, u: order.append("connected")
     deps.approvals.request_worklog_approval.side_effect = lambda *a: order.append("approval") or {"approval_id": "a-1"}
 
     # Act
-    outcome = execute_plan({"intent": "prepare_worklog", "parameters": dict(FORM)}, "U1", "C1")
+    outcome = execute_plan({"intent": "prepare_worklog", "parameters": dict(FORM)}, "T1", "U1", "C1")
 
     # Assert
     assert outcome == {"intent": "prepare_worklog", "approval_id": "a-1"}
     assert order == ["connected", "approval"]
-    deps.approvals.request_worklog_approval.assert_called_once_with("U1", "C1", FORM)
+    deps.approvals.request_worklog_approval.assert_called_once_with("T1", "U1", "C1", FORM)
     deps.jira.assert_not_called()  # the agent never writes to Jira itself
 
 
@@ -242,10 +241,10 @@ def test_tc17_form_is_normalised(deps):
     parameters.update(issue_key=" PROJ-12 ", description=12345, unexpected="ignored")
 
     # Act
-    execute_plan({"intent": "prepare_worklog", "parameters": parameters}, "U1", "C1")
+    execute_plan({"intent": "prepare_worklog", "parameters": parameters}, "T1", "U1", "C1")
 
     # Assert
-    form = deps.approvals.request_worklog_approval.call_args.args[2]
+    form = deps.approvals.request_worklog_approval.call_args.args[3]
     assert form == {**FORM, "description": "12345", "remaining_estimate": "leave"}
 
 
@@ -263,7 +262,7 @@ def test_tc17_form_is_normalised(deps):
 ])
 def test_tc18_invalid_fields_become_clarify(deps, override, message):
     # Act
-    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, **override}}, "U1", "C1")
+    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, **override}}, "T1", "U1", "C1")
 
     # Assert
     assert outcome["intent"] == "clarify"
@@ -281,7 +280,7 @@ def test_tc18_invalid_fields_become_clarify(deps, override, message):
 ])
 def test_tc19_estimate_rules(deps, override, message):
     # Act
-    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, **override}}, "U1", "C1")
+    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, **override}}, "T1", "U1", "C1")
 
     # Assert
     assert outcome["intent"] == "clarify" and message in outcome["message"]
@@ -291,16 +290,16 @@ def test_tc19_estimate_rules(deps, override, message):
 def test_tc19_new_estimate_is_kept_when_valid(deps):
     # Act
     execute_plan({"intent": "prepare_worklog",
-                  "parameters": {**FORM, "remaining_estimate": "new", "new_estimate": " 2h "}}, "U1", "C1")
+                  "parameters": {**FORM, "remaining_estimate": "new", "new_estimate": " 2h "}}, "T1", "U1", "C1")
 
     # Assert
-    assert deps.approvals.request_worklog_approval.call_args.args[2]["new_estimate"] == "2h"
+    assert deps.approvals.request_worklog_approval.call_args.args[3]["new_estimate"] == "2h"
 
 
 def test_tc20_lower_case_issue_key_is_rejected_by_agent(deps):
     # Current behaviour (spec gap GAP-10): the modal upper-cases first, the agent does not.
     # Act
-    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, "issue_key": "proj-12"}}, "U1", "C1")
+    outcome = execute_plan({"intent": "prepare_worklog", "parameters": {**FORM, "issue_key": "proj-12"}}, "T1", "U1", "C1")
 
     # Assert
     assert outcome["intent"] == "clarify"
@@ -313,7 +312,7 @@ def test_tc21_unconnected_user_gets_no_approval(deps):
 
     # Act & Assert
     with pytest.raises(ValueError, match="not connected"):
-        execute_plan({"intent": "prepare_worklog", "parameters": dict(FORM)}, "U1", "C1")
+        execute_plan({"intent": "prepare_worklog", "parameters": dict(FORM)}, "T1", "U1", "C1")
     deps.approvals.request_worklog_approval.assert_not_called()
 
 
@@ -322,11 +321,11 @@ def test_tc22_list_assigned_issues(deps):
     deps.jira.return_value.find_assigned_issues.return_value = [{"key": "PROJ-1"}]
 
     # Act
-    outcome = execute_plan({"intent": "list_assigned_issues"}, "U1", "C1")
+    outcome = execute_plan({"intent": "list_assigned_issues"}, "T1", "U1", "C1")
 
     # Assert
     assert outcome == {"intent": "list_assigned_issues", "data": [{"key": "PROJ-1"}]}
-    deps.jira.assert_called_once_with("U1")
+    deps.jira.assert_called_once_with("T1", "U1")
     deps.jira.return_value.find_assigned_issues.assert_called_once_with("acc-1")
 
 
@@ -336,7 +335,7 @@ def test_tc23_get_today_worklogs(deps):
     deps.jira.return_value.fetch_today_worklogs.return_value = (date(2026, 11, 9), [{"key": "PROJ-1"}])
 
     # Act
-    outcome = execute_plan({"intent": "get_today_worklogs", "parameters": None}, "U1", "C1")
+    outcome = execute_plan({"intent": "get_today_worklogs", "parameters": None}, "T1", "U1", "C1")
 
     # Assert
     assert outcome == {"intent": "get_today_worklogs", "day": "2026-11-09", "data": [{"key": "PROJ-1"}]}
@@ -348,7 +347,7 @@ def test_tc24_get_issue_worklogs_valid_key(deps):
     deps.jira.return_value.get_issue_worklogs.return_value = [{"id": "1"}]
 
     # Act
-    outcome = execute_plan({"intent": "get_issue_worklogs", "parameters": {"issue_key": " PROJ-7 "}}, "U1", "C1")
+    outcome = execute_plan({"intent": "get_issue_worklogs", "parameters": {"issue_key": " PROJ-7 "}}, "T1", "U1", "C1")
 
     # Assert
     assert outcome == {"intent": "get_issue_worklogs", "issue_key": "PROJ-7", "data": [{"id": "1"}]}
@@ -359,7 +358,7 @@ def test_tc24_get_issue_worklogs_valid_key(deps):
 def test_tc24_get_issue_worklogs_invalid_key(deps, key):
     # Act & Assert
     with pytest.raises(ValueError, match="Issue key is invalid"):
-        execute_plan({"intent": "get_issue_worklogs", "parameters": {"issue_key": key}}, "U1", "C1")
+        execute_plan({"intent": "get_issue_worklogs", "parameters": {"issue_key": key}}, "T1", "U1", "C1")
     deps.jira.return_value.get_issue_worklogs.assert_not_called()
 
 
@@ -368,7 +367,7 @@ def test_tc24_get_issue_worklogs_invalid_key(deps, key):
 # --------------------------------------------------------------------------------------
 
 def action_event(decision, message_ts="1731139200.000100"):
-    event = {"_async_task": "handle_approval_action", "approval_id": "a-1", "decision": decision,
+    event = {"_async_task": "handle_approval_action", "team_id": "T1", "approval_id": "a-1", "decision": decision,
              "slack_user_id": "U1", "channel_id": "C1"}
     if message_ts:
         event["message_ts"] = message_ts
@@ -400,7 +399,7 @@ def test_tc25_successful_approve_notifies_and_replaces_buttons(approval_service,
 
     # Assert
     assert response["statusCode"] == 200
-    approval_service.approve_and_execute.assert_called_once_with("a-1", "U1")
+    approval_service.approve_and_execute.assert_called_once_with("T1", "a-1", "U1")
     (m1, p1), (m2, p2) = slack_calls(slack)
     assert (m1, p1) == ("chat.postEphemeral", {"channel": "C1", "user": "U1",
                                                "text": "✅ Jira worklog created successfully."})
@@ -445,7 +444,7 @@ def test_tc28_successful_reject_replaces_buttons(approval_service, slack):
     handle_async_task(action_event("reject_jira_write"))
 
     # Assert
-    approval_service.reject.assert_called_once_with("a-1", "U1")
+    approval_service.reject.assert_called_once_with("T1", "a-1", "U1")
     approval_service.approve_and_execute.assert_not_called()
     assert [m for m, _ in slack_calls(slack)] == ["chat.postEphemeral", "chat.update"]
     assert slack_calls(slack)[0][1]["text"] == "🚫 Approval rejected."
@@ -530,7 +529,7 @@ def urlopen():
 
 def test_tc33_slack_api_request(urlopen):
     # Act
-    result = slack_api("chat.postMessage", {"channel": "C1", "text": "Xin chào ✅"})
+    result = slack_api("chat.postMessage", {"channel": "C1", "text": "Xin chào ✅"}, "T1")
 
     # Assert
     assert result == {"ok": True, "ts": "1.2"}
@@ -553,18 +552,21 @@ def test_tc34_slack_error_raises_without_token(urlopen, body, message):
 
     # Act & Assert
     with pytest.raises(RuntimeError) as exc_info:
-        slack_api("chat.postMessage", {"channel": "C1"})
+        slack_api("chat.postMessage", {"channel": "C1"}, "T1")
     assert str(exc_info.value) == message
     assert BOT_TOKEN not in str(exc_info.value)
 
 
-def test_tc35_missing_bot_token(urlopen, monkeypatch):
-    # Arrange
-    monkeypatch.delenv("SLACK_BOT_TOKEN")
+@pytest.mark.real_installation_store
+def test_tc35_workspace_without_installation(urlopen):
+    # Arrange: the installations table has no row for this workspace
+    from slack.installation_store import InstallationStore, SlackNotInstalled
+    table = MagicMock()
+    table.get_item.return_value = {}
 
-    # Act & Assert
-    with pytest.raises(KeyError):
-        slack_api("chat.postMessage", {"channel": "C1"})
+    # Act & Assert: no bot token, so no HTTP call at all
+    with pytest.raises(SlackNotInstalled):
+        slack_api("chat.postMessage", {"channel": "C1"}, "T_UNKNOWN", store=InstallationStore(table))
     urlopen.assert_not_called()
 
 

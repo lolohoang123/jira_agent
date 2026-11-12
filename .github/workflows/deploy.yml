@@ -7,6 +7,8 @@ name: Deploy
 #   secrets.AWS_DEPLOY_ROLE_ARN  IAM role trusted for GitHub OIDC (no long-lived AWS keys)
 #   vars.AWS_REGION              e.g. ap-southeast-1
 #   vars.ATLASSIAN_CLIENT_ID     Atlassian app client id for that stage (not secret)
+#   vars.SLACK_CLIENT_ID         Slack app client id for that stage (not secret)
+#   vars.SLACK_APP_ID            optional, Slack app id; events of other apps are ignored
 #   vars.BEDROCK_MODEL_ID        Bedrock model or inference profile id
 #   vars.ALARM_EMAIL             optional
 # Secrets (signing secret, bot token, client secret, task secret) are NOT stored in GitHub:
@@ -71,6 +73,8 @@ jobs:
         env:
           AWS_REGION_VAR: ${{ vars.AWS_REGION }}
           ATLASSIAN_CLIENT_ID: ${{ vars.ATLASSIAN_CLIENT_ID }}
+          SLACK_CLIENT_ID: ${{ vars.SLACK_CLIENT_ID }}
+          SLACK_APP_ID: ${{ vars.SLACK_APP_ID }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
           ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
           # 0 (default) = no reserved concurrency; raise only after the account quota allows it.
@@ -79,7 +83,7 @@ jobs:
           AGENT_ENABLED: ${{ vars.AGENT_ENABLED }}
         run: |
           missing=""
-          for name in AWS_REGION_VAR ATLASSIAN_CLIENT_ID BEDROCK_MODEL_ID; do
+          for name in AWS_REGION_VAR ATLASSIAN_CLIENT_ID SLACK_CLIENT_ID BEDROCK_MODEL_ID; do
             [ -n "${!name}" ] || missing="$missing ${name%_VAR}"
           done
           if [ -n "$missing" ]; then
@@ -89,6 +93,7 @@ jobs:
           overrides=(
             "Stage=$STAGE"
             "AtlassianClientId=$ATLASSIAN_CLIENT_ID"
+            "SlackClientId=$SLACK_CLIENT_ID"
             "BedrockModelId=$BEDROCK_MODEL_ID"
             "BedrockRegion=$AWS_REGION_VAR"
             "ApprovalDelivery=dm"
@@ -96,6 +101,7 @@ jobs:
             "ReservedConcurrency=$RESERVED_CONCURRENCY"
           )
           [ -n "$ALARM_EMAIL" ] && overrides+=("AlarmEmail=$ALARM_EMAIL")
+          [ -n "$SLACK_APP_ID" ] && overrides+=("SlackAppId=$SLACK_APP_ID")
           [ -n "$AGENT_ENABLED" ] && overrides+=("AgentEnabled=$AGENT_ENABLED")
           sam deploy --config-env "$STAGE" --region "$AWS_REGION_VAR" \
             --no-confirm-changeset --no-fail-on-empty-changeset \
@@ -104,4 +110,4 @@ jobs:
       - name: Show endpoints
         run: |
           aws cloudformation describe-stacks --stack-name "jira-agent-$STAGE" \
-            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl' || OutputKey=='OAuthCallbackUrl']" --output table
+            --query "Stacks[0].Outputs[?contains(OutputKey, 'Url')]" --output table

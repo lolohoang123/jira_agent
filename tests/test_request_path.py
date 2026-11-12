@@ -206,7 +206,7 @@ def test_tc12_post_to_oauth_callback_requires_signature(entry_mocks):
 
 def test_tc13_async_task_with_correct_secret_runs(entry_mocks):
     # Arrange
-    event = {"_async_task": "jira_worklog", "_task_secret": TASK_SECRET}
+    event = {"_async_task": "jira_worklog", "team_id": "T1", "_task_secret": TASK_SECRET}
 
     # Act
     response = lambda_handler(event, None)
@@ -239,7 +239,7 @@ def test_tc15_async_task_forbidden_when_secret_not_configured(entry_mocks, monke
         monkeypatch.delenv("ASYNC_TASK_SECRET")
     else:
         monkeypatch.setenv("ASYNC_TASK_SECRET", configured)
-    event = {"_async_task": "jira_worklog", "_task_secret": ""}
+    event = {"_async_task": "jira_worklog", "team_id": "T1", "_task_secret": ""}
 
     # Act
     response = lambda_handler(event, None)
@@ -293,7 +293,7 @@ def test_tc18_handler_error_becomes_500(entry_mocks):
 # --------------------------------------------------------------------------------------
 
 def slash_body(text, command="/jira-agent", response_url=RESPONSE_URL):
-    return urllib.parse.urlencode({"command": command, "text": text, "user_id": "U1",
+    return urllib.parse.urlencode({"command": command, "text": text, "team_id": "T1", "user_id": "U1",
                                    "channel_id": "C1", "response_url": response_url})
 
 
@@ -367,7 +367,7 @@ def test_tc24_connect_builds_oauth_link(context, lambda_client, text):
 
     # Assert
     assert response["body"] == "link"
-    auth.return_value.build_connect_response.assert_called_once_with("U1")
+    auth.return_value.build_connect_response.assert_called_once_with("T1", "U1")
     lambda_client.invoke.assert_not_called()
 
 
@@ -385,7 +385,7 @@ def test_tc25_fixed_commands_start_async_task(context, lambda_client, text, task
 
     # Assert
     assert body_text(response) == "Fetching your Jira data..."
-    assert invoked_task(lambda_client) == {"_async_task": task, "_task_secret": TASK_SECRET,
+    assert invoked_task(lambda_client) == {"_async_task": task, "_task_secret": TASK_SECRET, "team_id": "T1",
                                            "slack_user_id": "U1", "account_id": "acc-1",
                                            "response_url": RESPONSE_URL}
 
@@ -409,7 +409,7 @@ def test_tc27_free_text_goes_to_agent_with_original_casing(context, lambda_clien
 
     # Assert
     assert body_text(response) == "I'm processing your Jira request..."
-    assert invoked_task(lambda_client) == {"_async_task": "agent_request", "_task_secret": TASK_SECRET,
+    assert invoked_task(lambda_client) == {"_async_task": "agent_request", "team_id": "T1", "_task_secret": TASK_SECRET,
                                            "slack_user_id": "U1", "channel_id": "C1",
                                            "text": "Log 1h on PROJ-1", "response_url": RESPONSE_URL}
 
@@ -431,7 +431,7 @@ def test_tc28_missing_task_secret_raises(context, lambda_client, monkeypatch):
 @pytest.mark.parametrize("action_id", ["approve_jira_write", "reject_jira_write"])
 def test_tc29_approval_buttons_start_approval_task(context, lambda_client, action_id):
     # Arrange
-    payload = {"type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"},
+    payload = {"type": "block_actions", "team": {"id": "T1"}, "user": {"id": "U1"}, "channel": {"id": "C1"},
                "message": {"ts": "1731139200.000100"},
                "actions": [{"action_id": action_id, "value": "approval-1"}]}
 
@@ -442,7 +442,8 @@ def test_tc29_approval_buttons_start_approval_task(context, lambda_client, actio
     assert response["statusCode"] == 200
     assert invoked_task(lambda_client) == {
         "_async_task": "handle_approval_action", "_task_secret": TASK_SECRET, "approval_id": "approval-1",
-        "decision": action_id, "slack_user_id": "U1", "channel_id": "C1", "message_ts": "1731139200.000100"}
+        "decision": action_id, "team_id": "T1", "slack_user_id": "U1", "channel_id": "C1",
+        "message_ts": "1731139200.000100"}
 
 
 class _FixedDateTime(datetime):
@@ -454,7 +455,7 @@ class _FixedDateTime(datetime):
 
 def test_tc30_log_time_button_opens_modal_with_local_date(context, lambda_client):
     # Arrange
-    payload = {"type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"}, "trigger_id": "trig-1",
+    payload = {"type": "block_actions", "team": {"id": "T1"}, "user": {"id": "U1"}, "channel": {"id": "C1"}, "trigger_id": "trig-1",
                "actions": [{"action_id": "open_log_time", "value": "PROJ-7"}]}
     with patch.object(slack_action_handler, "datetime", _FixedDateTime), \
             patch.object(slack_action_handler, "slack_api") as slack_api:
@@ -462,7 +463,8 @@ def test_tc30_log_time_button_opens_modal_with_local_date(context, lambda_client
         handle_block_actions(payload, context, lambda_client)
 
     # Assert
-    method, request = slack_api.call_args.args
+    method, request, team_id = slack_api.call_args.args
+    assert team_id == "T1"
     assert method == "views.open"
     assert request["trigger_id"] == "trig-1"
     view = request["view"]
@@ -475,7 +477,7 @@ def test_tc30_log_time_button_opens_modal_with_local_date(context, lambda_client
 @pytest.mark.parametrize("actions", [[], [{"action_id": "something_else"}]])
 def test_tc31_unknown_actions_are_ignored(context, lambda_client, actions):
     # Arrange
-    payload = {"type": "block_actions", "user": {"id": "U1"}, "actions": actions}
+    payload = {"type": "block_actions", "team": {"id": "T1"}, "user": {"id": "U1"}, "actions": actions}
     with patch.object(slack_action_handler, "slack_api") as slack_api:
         # Act
         response = handle_block_actions(payload, context, lambda_client)
@@ -490,7 +492,7 @@ def modal_payload(issue="PROJ-12", date="2026-11-09", duration="1h 30m", start="
                   description="Review", estimate="leave", new_estimate=""):
     def text(value):
         return {"value": value}
-    return {"type": "view_submission", "user": {"id": "U1"}, "view": {
+    return {"type": "view_submission", "team": {"id": "T1"}, "user": {"id": "U1"}, "view": {
         "private_metadata": json.dumps({"user_id": "U1", "channel_id": "C1"}),
         "state": {"values": {
             "issue_block": {"issue_key": text(issue)},
@@ -518,7 +520,7 @@ def test_tc32_valid_submission_requests_approval(context, lambda_client):
     task = invoked_task(lambda_client)
     assert task["_async_task"] == "request_worklog_approval"
     assert task["_task_secret"] == TASK_SECRET
-    assert task["slack_user_id"] == "U1" and task["channel_id"] == "C1"
+    assert task["team_id"] == "T1" and task["slack_user_id"] == "U1" and task["channel_id"] == "C1"
     assert task["form"] == {"issue_key": "PROJ-12", "date": "2026-11-09", "duration": "1h 30m",
                             "start_time": "09:00", "description": "Review",
                             "remaining_estimate": "leave", "new_estimate": ""}

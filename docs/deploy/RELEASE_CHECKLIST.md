@@ -11,7 +11,7 @@ Nothing secret is stored in `template.yaml`, GitHub, or Lambda environment varia
 | Parameter | Value |
 |---|---|
 | `/jira-agent/<stage>/slack-signing-secret` | Slack app → Basic Information → Signing Secret |
-| `/jira-agent/<stage>/slack-bot-token` | Slack app → OAuth & Permissions → Bot User OAuth Token (`xoxb-…`) |
+| `/jira-agent/<stage>/slack-client-secret` | Slack app → Basic Information → App Credentials → Client Secret (bot tokens are no longer in SSM: each workspace's token is stored by the install flow) |
 | `/jira-agent/<stage>/atlassian-client-secret` | Atlassian app → Settings → Secret |
 | `/jira-agent/<stage>/async-task-secret` | Random, at least 32 bytes (generate below) |
 
@@ -22,7 +22,7 @@ STAGE=staging
 python -c "import secrets; print(secrets.token_urlsafe(48))"   # value for async-task-secret
 aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/async-task-secret --value '<generated>'
 aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/slack-signing-secret --value '<from Slack>'
-aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/slack-bot-token --value '<xoxb-…>'
+aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/slack-client-secret --value '<from Slack>'
 aws ssm put-parameter --type SecureString --overwrite --name /jira-agent/$STAGE/atlassian-client-secret --value '<from Atlassian>'
 ```
 
@@ -104,12 +104,28 @@ console if a step looks different.
       `ApprovalDelivery=channel` must post in channels the bot was not invited to).
 - [ ] **App Home → Messages Tab** enabled. Approvals are sent as a DM from the bot (`ApprovalDelivery=dm`,
       default); users who cannot open the bot DM get "couldn't send you the approval" instead of a request.
-- [ ] Reinstall the app to the workspace after changing scopes; store the new bot token in SSM.
+- [ ] **OAuth & Permissions → Redirect URLs**: add the stack output `SlackRedirectUrl` exactly.
+- [ ] **Event Subscriptions** on, Request URL = output `SlackEventsUrl` (Slack sends a challenge; it must show
+      "Verified"). **Subscribe to bot events**: `app_uninstalled`, `tokens_revoked`.
+- [ ] **Manage Distribution → Activate Public Distribution** (other workspaces can install). Not needed if only
+      your own workspace installs.
+- [ ] GitHub environment variable `SLACK_CLIENT_ID` (Basic Information → Client ID); optional `SLACK_APP_ID`.
+- [ ] **Install every workspace through the link** (output `SlackInstallUrl`), including your own: a workspace
+      installed with the old single-token setup has no row in the installations table and gets
+      "hasn't installed the Jira app yet". Reinstalling after a scope change refreshes the stored token.
+
+### Moving from the single-workspace version
+
+- Jira connections now live in `jira-agent-<stage>-jira-connections` (key `team_id` + `slack_user_id`). The old
+  `jira-agent-<stage>-users` table is left behind (DeletionPolicy Retain) and is no longer used: users run
+  `/jira-agent connect` again, then delete the old table by hand.
+- `/jira-agent/<stage>/slack-bot-token` is no longer read; delete it after the switch.
 
 ## 6. Smoke test (staging, then prod)
 
 | # | Action | Expected |
 |---|---|---|
+| 0 | Open `SlackInstallUrl`, approve | "Jira app installed" page; a row for the workspace in `…-installations` |
 | 1 | `/jira-agent connect` → open link → consent | "Jira connected successfully" page |
 | 2 | `/jira-agent list` | Your assigned tickets with links to your Jira site |
 | 2b | `/jira-agent logwork find <word from a ticket title>`, then an issue key | Matching tickets with total logged time; the key is listed first; Log Time opens the modal |
@@ -126,7 +142,8 @@ console if a step looks different.
 | Data | Where | Kept until |
 |---|---|---|
 | OAuth state | `jira-agent-<stage>-oauth-states` | 10 minutes (single use) |
-| Jira connection and tokens | `jira-agent-<stage>-users` | `/jira-agent disconnect` (row deleted), or Atlassian rejects the refresh token (`invalid_grant`: tokens deleted, row kept as disconnected) |
+| Slack installation (bot token) | `jira-agent-<stage>-installations` | until `app_uninstalled` or `tokens_revoked` (bot) |
+| Jira connection and tokens | `jira-agent-<stage>-jira-connections` | `/jira-agent disconnect` (row deleted), or Atlassian rejects the refresh token (`invalid_grant`: tokens deleted, row kept as disconnected) |
 | Approvals (incl. description) | `jira-agent-<stage>-approvals` | 24 h if never handled; `APPROVAL_RETENTION_DAYS` (default 90) after approve/reject/cancel/failure |
 | Rate-limit counters | `jira-agent-<stage>-rate-limits` | 2 hours |
 | Failed async payloads | SQS `jira-agent-<stage>-async-failures` | 4 days (encrypted; contains the task secret and the form: restrict access) |
