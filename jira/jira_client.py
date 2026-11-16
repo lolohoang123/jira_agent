@@ -1,3 +1,4 @@
+"""Jira Cloud REST transport for one Slack user (OAuth 3LO, via api.atlassian.com/ex/jira/<cloudId>)."""
 import json
 import logging
 import os
@@ -15,17 +16,24 @@ class JiraClient:
     def __init__(self, team_id, slack_user_id):
         self.team_id = team_id
         self.slack_user_id = slack_user_id
+        # Loaded (and refreshed if about to expire) once per client; tokens are decrypted only in memory.
         self.credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials(team_id, slack_user_id)
 
     @property
     def cloud_id(self):
+        """Atlassian cloud id of the user's Jira site (all API calls go to this site)."""
         return self.credentials["cloud_id"]
 
     @property
     def site_url(self):
+        """Browser URL of the user's site (e.g. https://acme.atlassian.net), used to build issue links."""
         return (self.credentials.get("jira_site_url") or os.environ.get("JIRA_BASE_URL", "")).rstrip("/")
 
     def request(self, path, params=None, method="GET", data=None):
+        """Call a Jira REST ``path`` (e.g. /rest/api/3/myself) and return the parsed JSON ({} if empty).
+
+        HTTP errors become RuntimeError with a short excerpt of Jira's error body (never the token).
+        """
         cloud_id = self.credentials["cloud_id"]
         path = path if path.startswith("/") else f"/{path}"
         url = f"https://api.atlassian.com/ex/jira/{urllib.parse.quote(cloud_id, safe='')}{path}"

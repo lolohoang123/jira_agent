@@ -1,3 +1,9 @@
+"""Worklog approval workflow: the only path through which anything is written to Jira.
+
+1. request_worklog_approval: store a PENDING approval and post an Approve/Reject message (DM by default).
+2. approve_and_execute:      the owner clicked Approve -> claim PENDING -> EXECUTING -> write the worklog.
+3. reject:                   the owner clicked Reject  -> PENDING -> REJECTED.
+"""
 import logging
 import os
 import urllib.error
@@ -15,6 +21,7 @@ SITE_CHANGED_MESSAGE = ("Your Jira connection now points to a different Jira sit
 
 
 def current_jira_cloud_id(team_id, slack_user_id):
+    """Jira site the user is connected to right now (stored on the approval, re-checked at approval time)."""
     return DynamoHelper("OAUTH_USERS_TABLE").get_jira_cloud_id_for_slack_user(team_id, slack_user_id)
 
 
@@ -29,6 +36,7 @@ def _worklog_summary(form):
 
 
 def duplicate_approval_message(form):
+    """User-facing text when an identical worklog request already exists."""
     return (f"⚠️ An identical worklog request ({_worklog_summary(form)}) is already waiting for approval "
             "or was approved in the last 24 hours, so no new request was created.")
 
@@ -40,6 +48,7 @@ def approval_delivery_mode():
 
 
 def undelivered_approval_message(form, channel_id):
+    """User-facing text when the approval message could not be posted (with a hint for the delivery mode)."""
     if approval_delivery_mode() == "dm":
         return (f"⚠️ I couldn't send you the approval for your worklog ({_worklog_summary(form)}) as a "
                 "direct message. Nothing was logged to Jira. Open the app's Messages tab in Slack "
@@ -50,6 +59,7 @@ def undelivered_approval_message(form, channel_id):
 
 
 def approval_posted_message():
+    """Agent reply after a worklog was prepared: tells the user where to find the approval."""
     if approval_delivery_mode() == "dm":
         return ("I've sent you the worklog approval request as a direct message. "
                 "Jira will be updated only after you approve it.")
@@ -69,6 +79,8 @@ def _delivery_unconfirmed(exc):
 
 
 class ApprovalService:
+    """Creates, approves and rejects worklog approvals (repository and site lookup injectable for tests)."""
+
     def __init__(self, repository=None, cloud_id_resolver=None):
         self.repository = repository or ApprovalRepository()
         self._cloud_id_resolver = cloud_id_resolver
@@ -109,6 +121,8 @@ class ApprovalService:
 
     @staticmethod
     def _post_approval_message(item, team_id, channel_id, form):
+        """Post the summary with Approve/Reject buttons; both buttons carry the approval id as their value."""
+        # User-entered values are escaped so they cannot inject Slack mentions or links.
         key = slack_escape(form["issue_key"])
         duration = slack_escape(form["duration"])
         description = slack_escape(form.get("description") or "—")
@@ -129,6 +143,8 @@ class ApprovalService:
         }, team_id)
 
     def approve_and_execute(self, team_id, approval_id, slack_user_id):
+        """Write the approved worklog to Jira. Returns {"ok": bool, ...}; re-raises unexpected Jira errors."""
+        # Atomic owner-only claim: a second click, another user or an expired approval gets None here.
         item = self.repository.claim(approval_id, team_id, slack_user_id)
         if not item:
             return {"ok": False, "message": "This approval is expired, already handled, or does not belong to you."}
@@ -159,4 +175,5 @@ class ApprovalService:
             raise
 
     def reject(self, team_id, approval_id, slack_user_id):
+        """Owner-only reject; returns the updated approval or None (expired, handled, not the owner)."""
         return self.repository.reject(approval_id, team_id, slack_user_id)

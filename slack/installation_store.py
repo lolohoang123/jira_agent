@@ -28,10 +28,13 @@ class SlackNotInstalled(RuntimeError):
 
 
 def clear_cache():
+    """Forget every cached bot token (used by tests)."""
     _cache.clear()
 
 
 class InstallationStore:
+    """Read/write workspace installations; ``table`` is injectable for tests."""
+
     def __init__(self, table=None):
         if table is None:
             table_name = os.environ.get("INSTALLATIONS_TABLE")
@@ -57,12 +60,14 @@ class InstallationStore:
             "updated_at": now,
         }
         self.table.put_item(Item=item)
-        _cache.pop(item["team_id"], None)
+        _cache.pop(item["team_id"], None)  # the next call must use the new token
         return item
 
     def get_bot_token(self, team_id):
+        """Decrypted bot token of the workspace; raises SlackNotInstalled when there is none."""
         if not team_id:
             raise SlackNotInstalled(team_id)
+        # Per-container cache: avoids a DynamoDB read + KMS decrypt on every Slack call.
         cached = _cache.get(team_id)
         if cached and time.monotonic() - cached[1] < TOKEN_CACHE_SECONDS:
             return cached[0]
@@ -75,6 +80,7 @@ class InstallationStore:
         return token
 
     def is_installed(self, team_id):
+        """True when the workspace has a usable bot token."""
         try:
             self.get_bot_token(team_id)
             return True

@@ -1,3 +1,7 @@
+"""Slack interactivity: button clicks (block_actions) and the Log Time modal submit (view_submission).
+
+Both must answer Slack within 3 seconds, so anything that touches Jira is handed to an async task.
+"""
 import json
 import logging
 import re
@@ -20,11 +24,14 @@ def team_id_of(payload):
 
 
 def handle_block_actions(payload, context=None, lambda_client=None):
+    """Handle a button click: Approve/Reject on an approval message, or Log Time on a ticket row."""
     actions = payload.get("actions", [])
     team_id = team_id_of(payload)
     if not team_id:
         logger.warning("Ignoring block action without a workspace id")
         return json_response(200, "")
+    # Approve / Reject: forward to the async task. The clicking user comes from the signed payload; the
+    # approval service later checks that this user owns the approval, so nobody else can approve it.
     action = next((a for a in actions if a.get("action_id") in {"approve_jira_write", "reject_jira_write"}), None)
     if action:
         task = {"_async_task": "handle_approval_action", "_task_secret": get_secret("ASYNC_TASK_SECRET"),
@@ -35,11 +42,14 @@ def handle_block_actions(payload, context=None, lambda_client=None):
                 "message_ts": payload.get("message", {}).get("ts")}
         lambda_client.invoke(FunctionName=context.function_name, InvocationType="Event", Payload=json.dumps(task).encode())
         return json_response(200, "")
+    # Log Time: open the modal right away (trigger_id is only valid for 3 seconds), with the ticket key
+    # pre-filled from the button value. Any other action id is ignored.
     action=next((a for a in actions if a.get("action_id")=="open_log_time"),None)
     if not action:
         return json_response(200,"")
     user=payload["user"]["id"]
     channel=payload.get("channel",{}).get("id","")
+    # Default date = "today" in the user's own timezone (one DynamoDB read, no Jira call).
     tz=ZoneInfo(user_timezone_name(team_id,user))
     today=datetime.now(tz).date().isoformat()
     try:
@@ -50,9 +60,11 @@ def handle_block_actions(payload, context=None, lambda_client=None):
 
 
 def handle_view_submission(payload, context, lambda_client):
+    """Validate the Log Time modal and queue an approval request; Jira is NOT written here."""
     view=payload["view"]
     form=get_modal_form(view)
     metadata=json.loads(view.get("private_metadata") or "{}")
+    # Field-level validation: errors are shown next to the fields and the modal stays open.
     errors={}
     if not form["issue_key"]:
         errors["issue_block"]="Issue is required."
@@ -73,6 +85,7 @@ def handle_view_submission(payload, context, lambda_client):
     team_id=team_id_of(payload)
     if not team_id:
         return json_response(200,{"response_action":"errors","errors":{"issue_block":"Could not identify your Slack workspace. Please try again."}})
+    # Creating the approval and sending the DM happen asynchronously; the modal closes immediately.
     task={"_async_task":"request_worklog_approval","_task_secret":get_secret("ASYNC_TASK_SECRET"),
           "form":form,"user_id":owner,"channel_id":metadata["channel_id"],
           "team_id":team_id,"slack_user_id":owner}

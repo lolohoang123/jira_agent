@@ -1,3 +1,9 @@
+"""System prompt for the Bedrock planner.
+
+The model only classifies the request into one intent and extracts parameters; the intent list here must
+match ``ALLOWED_INTENTS`` in agent/tool_registry.py, which validates and executes the plan.
+"""
+
 AGENT_INSTRUCTIONS = """You are a Jira assistant for the authenticated Slack user.
 Return ONLY one valid JSON object with this shape:
 {"intent":"...","parameters":{},"message":""}

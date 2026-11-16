@@ -20,11 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def _page(status, title, message):
+    """Simple HTML result page shown in the installer's browser (same template as the Jira callback)."""
     return AuthenticationJira({}).html_response(status, title, message)
 
 
 def handle_slack_install(event):
+    """Redirect the browser to Slack's consent screen with our scopes and a fresh one-time state."""
     try:
+        # The state row (10-minute TTL) is checked and consumed by the callback below.
         state = DynamoHelper("OAUTH_STATES_TABLE").create_slack_install_state()
         params = {"client_id": get_slack_client_id(), "scope": ",".join(SLACK_BOT_SCOPES),
                   "redirect_uri": os.environ["SLACK_REDIRECT_URI"], "state": state}
@@ -36,15 +39,20 @@ def handle_slack_install(event):
 
 
 def handle_slack_oauth_callback(event):
+    """Finish the install: verify the state, exchange the code for a bot token and store it per workspace."""
     params = event.get("queryStringParameters") or {}
+    # The installer clicked "Cancel" on Slack's consent screen.
     if params.get("error"):
         return _page(400, "Installation cancelled", "Slack did not authorize the installation.")
     code, state = params.get("code"), params.get("state")
     if not code or not state:
         return _page(400, "Could not install the app", "Missing authorization code or state. Start again.")
     try:
+        # Single use and unexpired; raises ValueError (shown to the user) otherwise. Done before the code
+        # exchange so a forged or replayed callback never reaches Slack.
         DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state(state, kind="slack_install")
         result = exchange_install_code(code, os.environ["SLACK_REDIRECT_URI"])
+        # Org-wide (Enterprise Grid) installs have no single team_id, which every table here is keyed on.
         if result.get("is_enterprise_install"):
             return _page(400, "Organization-wide install not supported",
                          "Install the app in each Slack workspace instead of for the whole organization.")
@@ -52,6 +60,7 @@ def handle_slack_oauth_callback(event):
         token = result.get("access_token")
         if not team.get("id") or not token or result.get("token_type") != "bot":
             raise RuntimeError("Slack did not return a workspace bot token")
+        # One row per workspace; reinstalling overwrites it (new token and scopes). The store encrypts the token.
         InstallationStore().save({
             "team_id": team["id"],
             "team_name": team.get("name"),

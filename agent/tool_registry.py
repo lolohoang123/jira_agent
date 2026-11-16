@@ -8,6 +8,8 @@ from util.common import validate_duration
 from approval.approval_service import (ApprovalService, ApprovalDeliveryError, DuplicateApprovalError,
                                        duplicate_approval_message, undelivered_approval_message)
 
+# The only operations a model plan can trigger. Adding a capability = add it here AND add an explicit
+# branch with input validation in execute_plan (never call a function by a model-supplied name).
 ALLOWED_INTENTS = {
     "list_assigned_issues", "get_today_worklogs", "get_issue_worklogs",
     "prepare_worklog", "clarify", "unknown",
@@ -15,12 +17,14 @@ ALLOWED_INTENTS = {
 
 
 def _validate_issue_key(value):
+    """Return a normalized Jira issue key (e.g. PROJ-123) or raise ValueError."""
     if not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", value.strip()):
         raise ValueError("Issue key is invalid. Example: PROJ-123.")
     return value.strip().upper()
 
 
 def _validate_worklog_form(parameters):
+    """Build the same worklog form the Log Time modal produces, validating every model-supplied field."""
     if not isinstance(parameters, dict):
         raise ValueError("Worklog parameters must be an object.")
     form = {
@@ -57,11 +61,13 @@ def execute_plan(plan, team_id, slack_user_id, channel_id):
     if not isinstance(parameters, dict):
         raise ValueError("Agent parameters must be an object.")
 
+    # No Jira call: just relay the model's question or explanation (length-capped).
     if intent == "clarify":
         return {"intent": intent, "message": str(plan.get("message") or "Please provide more details.")[:1500]}
     if intent == "unknown":
         return {"intent": intent, "message": str(plan.get("message") or "I couldn't understand that Jira request.")[:1500]}
 
+    # Write request: only creates a PENDING approval. Jira is written later, when the user clicks Approve.
     if intent == "prepare_worklog":
         try:
             form = _validate_worklog_form(parameters)
@@ -84,6 +90,7 @@ def execute_plan(plan, team_id, slack_user_id, channel_id):
     account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
     service = JiraService(team_id, slack_user_id)
 
+    # Read-only intents, always scoped to the requesting user's own Jira account and site.
     if intent == "list_assigned_issues":
         return {"intent": intent, "data": service.find_assigned_issues(account_id)}
     if intent == "get_today_worklogs":

@@ -1,3 +1,9 @@
+"""Router for async self-invocations (slow work that runs after Slack already got its 3-second ACK).
+
+Each event carries ``_async_task`` (the task name, always set by our own code, never by a user or the model)
+plus the Slack identity (``team_id``, ``slack_user_id``). The caller in read_jira_lambda.py has already
+checked ASYNC_TASK_SECRET. Results go back to Slack through ``response_url`` or the Web API.
+"""
 import logging
 from jira.tasks.run_today_worklogs_task import RunTodayWorklogsTask
 from jira.tasks.run_list_assigned_task import RunListAssignedTask
@@ -11,10 +17,12 @@ def _notify_approval_result(event, user_id, message, update_original):
     """Best-effort Slack notification: a Slack failure must not fail (and retry) the task."""
     from slack.slack_client import slack_api
     team_id = event.get("team_id")
+    # 1) Private result for the person who clicked the button.
     try:
         slack_api("chat.postEphemeral", {"channel": event["channel_id"], "user": user_id, "text": message}, team_id)
     except Exception:
         logger.exception("Could not send approval result to Slack user %s", user_id)
+    # 2) Replace the approval message (and its buttons) with the outcome, so it cannot be clicked again.
     if update_original and event.get("message_ts"):
         try:
             slack_api("chat.update", {"channel": event["channel_id"], "ts": event["message_ts"],
@@ -35,10 +43,12 @@ def _notify_user_directly(team_id, user_id, message):
 
 
 def handle_async_task(event):
+    """Run one async task by name; unknown names get a 400 (the name is never dispatched dynamically)."""
     # Async ("Event") invocations are retried by Lambda when the handler raises. The tasks below are
     # not idempotent (a retry would create a second approval or repeat the agent reply), so failures
     # are logged and returned instead of raised.
     task=event.get("_async_task")
+    # Log Time modal was submitted: create a PENDING approval and send it to the user (nothing is written yet).
     if task == "request_worklog_approval":
         from approval.approval_service import (ApprovalService, ApprovalDeliveryError, DuplicateApprovalError,
                                                duplicate_approval_message, undelivered_approval_message)
@@ -56,6 +66,8 @@ def handle_async_task(event):
             _notify_user_directly(team_id, user_id, "⚠️ Your worklog request could not be created. Nothing was logged to Jira. "
                                            "Please try again.")
             return json_response(500, {"error": "approval_request_failed"})
+    # Approve/Reject button clicked. This is the ONLY place a worklog is written to Jira: the service checks
+    # the owner and claims the approval (PENDING -> EXECUTING) before calling Jira.
     elif task == "handle_approval_action":
         from approval.approval_service import ApprovalService
         service = ApprovalService()
@@ -76,6 +88,7 @@ def handle_async_task(event):
         # Only a successful approve/reject may replace the original message; otherwise anyone
         # clicking the buttons could wipe the owner's Approve/Reject controls.
         _notify_approval_result(event, user_id, message, update_original=succeeded)
+    # Free-text request: Bedrock returns a JSON plan, which tool_registry validates and executes (allow-list).
     elif task == "agent_request":
         from agent.orchestrator import AgentOrchestrator
         from slack.slack_client import post_slack_response
@@ -102,12 +115,14 @@ def handle_async_task(event):
         except Exception:
             logger.exception("Agent request failed for Slack user %s", event.get("slack_user_id"))
             return json_response(500, {"error": "agent_request_failed"})
-    elif task=="jira_worklog":
+    # Read-only Jira tasks behind the fixed commands; each posts its result to the command's response_url.
+    elif task=="jira_worklog":  # /jira-agent logwork today
         RunTodayWorklogsTask(event).run_today_worklogs_task()
-    elif task=="list_assigned_issues":
+    elif task=="list_assigned_issues":  # /jira-agent list
         RunListAssignedTask(event).run_list_assigned_task()
-    elif task=="search_issues":
+    elif task=="search_issues":  # /jira-agent logwork find <keyword>
         RunSearchIssuesTask(event).run()
+    # Workspace removed the app or revoked its bot token: delete that workspace's data.
     elif task=="uninstall_workspace":
         from handlers.slack_events_handler import uninstall_workspace
         uninstall_workspace(event["team_id"], reason=event.get("reason", "app_uninstalled"))

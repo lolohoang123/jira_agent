@@ -1,3 +1,7 @@
+"""Jira business operations for one Slack user: list, search, today's worklogs and the worklog write.
+
+``create_worklog`` must only be called from ApprovalService.approve_and_execute (after the approval claim).
+"""
 import logging
 import re
 import urllib.parse
@@ -11,14 +15,14 @@ from util.timezone import resolve_timezone, valid_timezone_name
 logger = logging.getLogger(__name__)
 
 
-ISSUE_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+")
-SEARCH_LIMIT = 20
-MAX_KEYWORD_LENGTH = 100
+ISSUE_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+")  # e.g. PROJ-123
+SEARCH_LIMIT = 20                                  # tickets shown per search
+MAX_KEYWORD_LENGTH = 100                           # longer search text is truncated
 # JQL string delimiters and Lucene operators: removed so user text can only ever be search terms.
 _JQL_SPECIAL = re.compile(r"""["'\\+\-&|!(){}\[\]^~*?:/;,<>=]""")
 
 
-MAX_SEARCH_TERMS = 5
+MAX_SEARCH_TERMS = 5  # at most this many words become text ~ "word*" clauses
 
 
 def jql_text_terms(keyword):
@@ -41,6 +45,8 @@ def jql_like_clause(keyword):
 
 
 class JiraService:
+    """High-level Jira calls made with the credentials of (team_id, slack_user_id)."""
+
     def __init__(self, team_id, slack_user_id):
         self.client = JiraClient(team_id, slack_user_id)
         self.team_id = team_id
@@ -50,7 +56,7 @@ class JiraService:
     @property
     def timezone(self):
         """The user's timezone (stored on the connection), else the ``JIRA_TIMEZONE`` default."""
-        if self._timezone is None:
+        if self._timezone is None:  # resolved once per service instance
             credentials = getattr(self.client, "credentials", None)
             name = credentials.get("time_zone") if isinstance(credentials, dict) else None
             if isinstance(credentials, dict) and not valid_timezone_name(name):
@@ -76,9 +82,11 @@ class JiraService:
 
     @property
     def site_url(self):
+        """Browser URL of the user's Jira site, for issue links."""
         return self.client.site_url
 
     def _search(self, jql, fields, max_pages=10, page_size=100):
+        """Run a JQL search and follow ``nextPageToken`` pagination (at most ``max_pages`` pages)."""
         issues, token = [], None
         for _ in range(max_pages):
             body = {"jql": jql, "fields": fields, "maxResults": page_size}
@@ -92,6 +100,7 @@ class JiraService:
         return issues
 
     def find_assigned_issues(self, account_id):
+        """Issues assigned to the user, most recently updated first."""
         # "timespent" is Jira's total logged seconds per issue, so callers need no per-issue worklog calls.
         return self._search(f'assignee = "{account_id}" ORDER BY updated DESC', ["summary", "status", "timespent"])
 
@@ -108,6 +117,7 @@ class JiraService:
         fields = ["summary", "status", "timespent"]
         issues = self._search(f"{clause} ORDER BY updated DESC", fields,
                               max_pages=1, page_size=limit + 1)
+        # The keyword is an issue key: put that issue first (once), followed by the text matches.
         key = keyword.strip().upper()
         if ISSUE_KEY_RE.fullmatch(key):
             exact = self._get_issue(key, fields)
@@ -116,6 +126,7 @@ class JiraService:
         return issues[:limit + 1]
 
     def _get_issue(self, issue_key, fields):
+        """One issue by key, or None if it does not exist or the user cannot see it."""
         try:
             return self.client.request(f"/rest/api/3/issue/{urllib.parse.quote(issue_key, safe='')}",
                                        params={"fields": ",".join(fields)})
@@ -123,10 +134,15 @@ class JiraService:
             return None  # unknown key or no permission: the text search results still apply
 
     def find_issues_with_worklogs_today(self, account_id, day):
+        """Issues where the user logged work on ``day`` (Jira evaluates worklogDate in the user's timezone)."""
         jql = f'worklogAuthor = "{account_id}" AND worklogDate = "{day:%Y/%m/%d}"'
         return self._search(jql, ["summary"])
 
     def get_issue_worklogs(self, issue_key, start_ms=None, end_ms=None):
+        """All worklogs of an issue, optionally limited to a start-time window (epoch milliseconds).
+
+        Paginates with startAt/maxResults; the loop is capped at 100 pages as a safety limit.
+        """
         worklogs, start_at = [], 0
         for _ in range(100):
             params = {"startAt": start_at, "maxResults": 100}
@@ -144,6 +160,7 @@ class JiraService:
 
     @staticmethod
     def comment_to_text(comment):
+        """Flatten a worklog comment in Atlassian Document Format (nested JSON) into plain text."""
         parts = []
         def walk(node):
             if isinstance(node, dict):
@@ -157,23 +174,31 @@ class JiraService:
 
     @staticmethod
     def format_duration(seconds):
+        """Seconds -> "1h 30m" / "2h" / "45m"."""
         minutes = max(0, int(seconds)) // 60
         hours, minutes = divmod(minutes, 60)
         return f"{hours}h {minutes}m" if hours and minutes else (f"{hours}h" if hours else f"{minutes}m")
 
     def fetch_today_worklogs(self, account_id):
+        """The user's own worklogs started today (user's timezone), sorted by start time.
+
+        Returns (day, entries); each entry has key, summary, started (aware datetime), seconds, comment.
+        """
         tz = self.timezone
         now = datetime.now(tz)
         day = now.date()
+        # Local midnight..23:59:59 of today, used as the started window when reading each issue's worklogs.
         start = datetime.combine(day, dt_time.min, tzinfo=tz)
         end = datetime.combine(day, dt_time.max, tzinfo=tz)
         entries = []
+        # Step 1: JQL finds the issues; step 2: read their worklogs and keep only this user's, from today.
         for issue in self.find_issues_with_worklogs_today(account_id, day):
             key = issue["key"]
             summary = issue.get("fields", {}).get("summary", "")
             for worklog in self.get_issue_worklogs(key, int(start.timestamp()*1000), int(end.timestamp()*1000)):
                 if worklog.get("author", {}).get("accountId") != account_id or not worklog.get("started"):
                     continue
+                # Convert Jira's timestamp to the user's timezone and double-check the day.
                 try:
                     started = datetime.fromisoformat(worklog["started"].replace("Z", "+00:00")).astimezone(tz)
                 except ValueError:
@@ -187,6 +212,7 @@ class JiraService:
         return day, entries
 
     def create_worklog(self, form):
+        """POST a worklog to Jira. The form is re-validated here even though the modal/agent validated it."""
         issue_key = form["issue_key"]
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", issue_key):
             raise ValueError("Issue key is invalid. Example: PROJ-123.")
@@ -196,13 +222,17 @@ class JiraService:
             raise ValueError("Invalid remaining estimate option.")
         if estimate == "new" and not form.get("new_estimate"):
             raise ValueError("Enter a new remaining estimate or choose another option.")
+        # Date + start time are the user's local time; Jira wants "2026-11-09T09:00:00.000+0700"
+        # (milliseconds, then the UTC offset without a colon).
         tz = self.timezone
         started =datetime.strptime(f"{form['date']} {form['start_time']}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
         started_text = started.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         started_text = started_text[:23] + started.strftime("%z")
         body = {"started": started_text, "timeSpent": duration}
+        # Optional description, as an Atlassian Document Format paragraph.
         if form.get("description"):
             body["comment"] = {"type": "doc", "version": 1, "content":[{"type":"paragraph","content":[{"type":"text","text":form["description"]}]}]}
+        # leave = keep remaining estimate, auto = subtract the logged time, new = set newEstimate.
         params = {"adjustEstimate": estimate}
         if estimate == "new":
             params["newEstimate"] = form["new_estimate"]

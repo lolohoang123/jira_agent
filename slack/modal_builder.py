@@ -1,7 +1,13 @@
+"""The "Log Time" modal (Slack view) and the parsing of its submitted values."""
 import json
 
 
 def build_log_time_modal(user_id, channel_id, default_date, issue_key=""):
+    """Modal with issue, date, duration, start time, description and remaining-estimate fields.
+
+    ``private_metadata`` keeps the opener and the channel so the submit handler knows where the request
+    came from; ``block_id`` / ``action_id`` values are read back by get_modal_form.
+    """
     return {
         "type": "modal", "callback_id": "log_time_submit",
         "private_metadata": json.dumps({"user_id": user_id, "channel_id": channel_id}),
@@ -21,8 +27,9 @@ def build_log_time_modal(user_id, channel_id, default_date, issue_key=""):
 
 
 def get_modal_form(view):
+    """Extract the submitted values into a normalized worklog form (issue key upper-cased, text trimmed)."""
     values = view["state"]["values"]
-    def value(block, action):
+    def value(block, action):  # text input value, None when left empty
         return values[block][action].get("value")
     return {
         "issue_key": (value("issue_block", "issue_key") or "").strip().upper(),

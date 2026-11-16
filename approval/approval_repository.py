@@ -1,3 +1,14 @@
+"""DynamoDB storage for worklog approvals (table APPROVALS_TABLE, key ``approval_id``).
+
+Approval lifecycle (every transition is a conditional update, so it happens at most once):
+
+    PENDING --claim (owner clicks Approve)--> EXECUTING --> APPROVED_EXECUTED | EXECUTION_FAILED | CANCELLED
+    PENDING --reject (owner clicks Reject)--> REJECTED
+    PENDING --cancel (Slack delivery failed / app uninstalled)--> CANCELLED
+
+PENDING rows expire after 24 h (``expires_at`` is checked by the claim; ``ttl`` lets DynamoDB delete them).
+Finished rows are kept for APPROVAL_RETENTION_DAYS as an audit record.
+"""
 import hashlib
 import logging
 import os
@@ -9,9 +20,9 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-DEDUPE_PREFIX = "dedupe#"
-DEDUPE_WINDOW_SECONDS = 86400
-DEFAULT_RETENTION_DAYS = 90
+DEDUPE_PREFIX = "dedupe#"          # approval_id prefix of dedupe rows (same table as approvals)
+DEDUPE_WINDOW_SECONDS = 86400      # an identical worklog is blocked for 24 h
+DEFAULT_RETENTION_DAYS = 90        # audit retention of finished approvals
 
 
 class DuplicateApprovalError(Exception):
@@ -36,6 +47,7 @@ def build_dedupe_key(team_id, slack_user_id, form):
 
 
 def retention_seconds():
+    """How long finished approvals are kept (APPROVAL_RETENTION_DAYS, at least 1 day)."""
     try:
         days = int(os.environ.get("APPROVAL_RETENTION_DAYS", DEFAULT_RETENTION_DAYS))
     except ValueError:
@@ -53,6 +65,8 @@ class ApprovalRepository:
     """
 
     def __init__(self, table=None):
+        # ``table`` is injectable for tests; otherwise use the real table (or DynamoDB Local when
+        # DYNAMODB_ENDPOINT_URL is set for local development).
         if table is None:
             table_name = os.environ.get("APPROVALS_TABLE")
             if not table_name:
@@ -68,6 +82,10 @@ class ApprovalRepository:
         self.table = table
 
     def create_pending(self, approval, ttl_seconds=86400):
+        """Store a new PENDING approval plus its dedupe row in one transaction.
+
+        Raises DuplicateApprovalError when an identical worklog is already pending or recently approved.
+        """
         now = int(time.time())
         dedupe_key = build_dedupe_key(approval["team_id"], approval["slack_user_id"], approval["form"])
         item = {
@@ -86,6 +104,7 @@ class ApprovalRepository:
         if approval.get("jira_cloud_id"):
             # Site the request was made for; the claim refuses to write anywhere else (SC-01).
             item["jira_cloud_id"] = approval["jira_cloud_id"]
+        # Points back to the approval that owns it, so only that approval can release it.
         dedupe_item = {
             "approval_id": DEDUPE_PREFIX + dedupe_key,
             "target_approval_id": item["approval_id"],
@@ -104,12 +123,14 @@ class ApprovalRepository:
                          "ExpressionAttributeValues": {":now": now}}},
             ])
         except ClientError as exc:
+            # The transaction failed because the dedupe row already exists -> duplicate request.
             if self._dedupe_conflict(exc):
                 raise DuplicateApprovalError(dedupe_key) from exc
             raise
         return item
 
     def get(self, approval_id):
+        """Read one approval (strongly consistent); None when it does not exist."""
         result = self.table.get_item(Key={"approval_id": approval_id}, ConsistentRead=True)
         return result.get("Item")
 
@@ -120,6 +141,7 @@ class ApprovalRepository:
             approval_id, team_id, slack_user_id, "EXECUTING", "approved_at", now)
 
     def reject(self, approval_id, team_id, slack_user_id):
+        """Owner-only PENDING -> REJECTED; frees the dedupe row so the user may submit again."""
         now = int(time.time())
         item = self._owner_transition(approval_id, team_id, slack_user_id, "REJECTED", "rejected_at", now)
         if item:
@@ -136,6 +158,7 @@ class ApprovalRepository:
             update += ", error_message = :error"
             values[":error"] = str(reason)[:500]
         try:
+            # Only a PENDING approval can be cancelled; anything else is left untouched (returns None).
             result = self.table.update_item(
                 Key={"approval_id": approval_id}, UpdateExpression=update,
                 ConditionExpression="#s = :pending",
@@ -207,6 +230,11 @@ class ApprovalRepository:
                 return cancelled
 
     def _owner_transition(self, approval_id, team_id, slack_user_id, new_status, timestamp_field, now):
+        """PENDING -> ``new_status`` only if the caller owns the approval and it has not expired.
+
+        The condition is evaluated by DynamoDB atomically, so two clicks (or two Lambda retries) can never
+        both succeed. Returns the updated row, or None when the condition fails.
+        """
         try:
             result = self.table.update_item(
                 Key={"approval_id": approval_id},
@@ -228,6 +256,7 @@ class ApprovalRepository:
 
     @staticmethod
     def _dedupe_conflict(exc):
+        """True when the transaction was cancelled by the dedupe Put (item #2), i.e. a duplicate request."""
         if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
             return False
         reasons = exc.response.get("CancellationReasons") or []

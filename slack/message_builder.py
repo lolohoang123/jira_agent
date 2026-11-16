@@ -1,3 +1,9 @@
+"""Slack Block Kit messages for command results (ticket lists, search results, today's worklogs).
+
+Every Jira value shown to the user goes through slack_escape so it cannot inject mentions or links;
+issue links are built from the user's own Jira site URL. Each row carries a "Log Time" button whose
+value is the issue key (handled by handle_block_actions -> open_log_time).
+"""
 import urllib.parse
 from util.common import slack_escape
 
@@ -6,11 +12,13 @@ MAX_WORKLOG_ITEMS=23
 
 
 def _duration(seconds):
+    """Seconds -> "1h 30m" / "2h" / "45m"."""
     minutes=max(0,int(seconds))//60; hours,minutes=divmod(minutes,60)
     return f"{hours}h {minutes}m" if hours and minutes else (f"{hours}h" if hours else f"{minutes}m")
 
 
 def build_today_worklog_blocks(day,worklogs,site_url):
+    """Blocks for /jira-agent logwork today: one row per worklog (time, duration, comment) and the total."""
     blocks=[{"type":"section","text":{"type":"mrkdwn","text":f"*Jira Worklogs — {day:%d/%m/%Y}*"}}]
     if not worklogs:
         blocks.append({"type":"section","text":{"type":"mrkdwn","text":"No worklogs found for today."}})
@@ -22,6 +30,7 @@ def build_today_worklog_blocks(day,worklogs,site_url):
             {"type":"actions","elements":[{"type":"button","action_id":"open_log_time","text":{"type":"plain_text","text":"Log Time"},"style":"primary","value":key}]}])
     if len(worklogs)>MAX_WORKLOG_ITEMS:
         blocks.append({"type":"context","elements":[{"type":"mrkdwn","text":f"_Showing {MAX_WORKLOG_ITEMS} of {len(worklogs)} worklogs._"}]})
+    # The total covers every worklog of the day, including rows not shown because of the block limit.
     total=sum(x["seconds"] for x in worklogs)
     blocks.extend([{"type":"divider"},{"type":"section","text":{"type":"mrkdwn","text":f"*Total: {_duration(total)}*"}}])
     return blocks
@@ -46,6 +55,7 @@ def _issue_list_blocks(header, empty_text, more_text, issues, site_url, limit=20
 
 
 def build_assigned_issue_blocks(issues,site_url):
+    """Blocks for /jira-agent list."""
     return _issue_list_blocks(
         "*Your assigned Jira tickets*\nShowing up to 20 tickets, ordered by recently updated.",
         "No Jira tickets are currently assigned to you.",

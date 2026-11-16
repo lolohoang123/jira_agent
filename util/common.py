@@ -1,9 +1,11 @@
+"""Small shared helpers: Lambda HTTP responses, Slack text escaping and Jira duration validation."""
 import json
 import os
 import re
 
 
 def json_response(status_code, body):
+    """API Gateway response; ``body`` is JSON-encoded unless it is already a string."""
     return {
         "statusCode": status_code,
         "headers": {"Content-Type": "application/json; charset=utf-8"},
@@ -12,19 +14,22 @@ def json_response(status_code, body):
 
 
 def slack_escape(value):
+    """Escape &, < and > so user/Jira text cannot create Slack links or mentions (also safe for HTML)."""
     value = str(value or "")
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Jira duration text such as "1w 2d 3h 30m": every unit optional, at least one number required.
 DURATION_RE = re.compile(
     r"(?i)(?=.*\d)\s*(?:(\d+)\s*w\s*)?(?:(\d+)\s*d\s*)?(?:(\d+)\s*h\s*)?(?:(\d+)\s*m\s*)?"
 )
 # Jira's default time-tracking settings: 1d = 8h, 1w = 5d.
 _UNIT_MINUTES = (5 * 8 * 60, 8 * 60, 60, 1)
-DEFAULT_MAX_WORKLOG_MINUTES = 24 * 60
+DEFAULT_MAX_WORKLOG_MINUTES = 24 * 60  # one worklog may be at most 24 h unless MAX_WORKLOG_MINUTES says otherwise
 
 
 def duration_to_minutes(duration):
+    """"1h 30m" -> 90; raises ValueError for anything that is not a Jira duration."""
     match = DURATION_RE.fullmatch(duration or "")
     if not match:
         raise ValueError("Duration must look like 30m, 1h, 1h 30m, or 1d.")
@@ -32,6 +37,7 @@ def duration_to_minutes(duration):
 
 
 def max_worklog_minutes():
+    """Upper limit for one worklog (MAX_WORKLOG_MINUTES; invalid or non-positive values use the default)."""
     try:
         value = int(os.environ.get("MAX_WORKLOG_MINUTES", DEFAULT_MAX_WORKLOG_MINUTES))
     except ValueError:

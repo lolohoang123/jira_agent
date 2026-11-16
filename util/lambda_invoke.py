@@ -1,3 +1,4 @@
+"""Fire-and-forget self-invocation used to run slow work after Slack received its 3-second ACK."""
 import json
 import logging
 
@@ -15,6 +16,7 @@ def invoke_async(lambda_client, context, task):
     """
     payload = json.dumps(task).encode()
     target = getattr(context, "invoked_function_arn", None) or context.function_name
+    # InvocationType="Event": returns immediately; Lambda runs the task in the background.
     try:
         return lambda_client.invoke(FunctionName=target, InvocationType="Event", Payload=payload)
     except ClientError as exc:

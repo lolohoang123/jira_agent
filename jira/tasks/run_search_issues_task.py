@@ -14,6 +14,7 @@ class RunSearchIssuesTask:
         self.event = event
 
     def run(self):
+        """Replace the "Searching..." ACK with the matching tickets, or with an error message."""
         url = self.event["response_url"]
         keyword = self.event["keyword"]
         try:

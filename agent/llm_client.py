@@ -7,7 +7,10 @@ import boto3
 
 
 class BedrockLLMClient:
+    """Thin wrapper around ``bedrock-runtime.converse`` that returns the model's JSON plan as a dict."""
+
     def __init__(self, client=None, model_id=None):
+        # ``client`` / ``model_id`` are injectable so tests can use a fake Bedrock client.
         self.model_id = model_id or os.environ.get("BEDROCK_MODEL_ID")
         if not self.model_id:
             raise RuntimeError("Missing required environment variable: BEDROCK_MODEL_ID")
@@ -15,6 +18,8 @@ class BedrockLLMClient:
         self.client = client or boto3.client("bedrock-runtime", region_name=region)
 
     def generate_plan(self, system_prompt, user_message):
+        """Ask the model for a plan; raise ValueError unless the reply is exactly one JSON object."""
+        # temperature 0: deterministic classification; maxTokens is small because only JSON is expected.
         # Do not log the prompt or the model output: they can contain worklog descriptions.
         response = self.client.converse(
             modelId=self.model_id,
@@ -22,6 +27,7 @@ class BedrockLLMClient:
             messages=[{"role": "user", "content": [{"text": user_message}]}],
             inferenceConfig={"maxTokens": 450, "temperature": 0},
         )
+        # Concatenate the text parts of the assistant message.
         content = response.get("output", {}).get("message", {}).get("content", [])
         raw = "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
         # Accept a fenced JSON response, but no prose or repair heuristics.

@@ -16,10 +16,11 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_LIMIT_PER_HOUR = 20
-WINDOW_SECONDS = 3600
+WINDOW_SECONDS = 3600  # fixed one-hour windows aligned to the clock
 
 
 def agent_limit_per_hour():
+    """Assistant requests allowed per user per hour (AGENT_RATE_LIMIT_PER_HOUR; 0 or less = unlimited)."""
     try:
         return int(os.environ.get("AGENT_RATE_LIMIT_PER_HOUR", DEFAULT_AGENT_LIMIT_PER_HOUR))
     except ValueError:
@@ -27,6 +28,8 @@ def agent_limit_per_hour():
 
 
 class RateLimiter:
+    """Atomic per-key counter in DynamoDB; no table configured means no limit."""
+
     def __init__(self, table=None):
         if table is None:
             table_name = os.environ.get("RATE_LIMITS_TABLE")
@@ -39,6 +42,8 @@ class RateLimiter:
             return True
         now = int(time.time())
         window_start = now - now % window_seconds
+        # One row per key and window. ADD increments atomically; the condition refuses the increment once
+        # the limit is reached. The row expires one window after the window ends.
         try:
             self.table.update_item(
                 Key={"limit_key": f"{key}#{window_start}"},
@@ -57,9 +62,11 @@ class RateLimiter:
 
 
 def agent_request_allowed(team_id, slack_user_id, limiter=None):
+    """Count one assistant request for this user (per workspace); False when over the hourly limit."""
     return (limiter or RateLimiter()).allow(f"agent#{team_id}#{slack_user_id}", agent_limit_per_hour())
 
 
 def agent_limit_message():
+    """User-facing text when the hourly assistant limit is reached."""
     return (f"You've reached the limit of {agent_limit_per_hour()} assistant requests per hour. "
             "Try again later. `/jira-agent list` and `/jira-agent logwork today` still work.")

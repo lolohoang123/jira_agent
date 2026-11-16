@@ -14,17 +14,21 @@ logger = logging.getLogger(__name__)
 
 
 class AgentOrchestrator:
+    """Free-text request -> Bedrock JSON plan -> allow-listed execution -> Slack reply text."""
+
     def __init__(self, llm_client=None, timezone_lookup=None):
         self.llm = llm_client or BedrockLLMClient()
         # (team_id, slack_user_id) -> IANA timezone name; injectable so tests need no DynamoDB.
         self.timezone_lookup = timezone_lookup or user_timezone_name
 
     def handle(self, slack_user_id: str, text: str, channel_id: str = "", team_id: str = "") -> AgentResult:
+        """Plan and execute one request. Never raises: errors become a generic user-facing message."""
         text = (text or "").strip()
         if not text:
             return AgentResult("Tell me what Jira information you need.")
         if not slack_user_id or not channel_id or not team_id:
             return AgentResult("I couldn't identify the Slack user or channel for this request.")
+        # Give the model the user's local date/time so it can resolve "today", "yesterday", "this morning".
         tz_name = self.timezone_lookup(team_id, slack_user_id)
         now = datetime.now(ZoneInfo(tz_name))
         context = (
@@ -34,6 +38,7 @@ class AgentOrchestrator:
             f"User request: {text}"
         )
         try:
+            # The model only returns a plan; execute_plan validates it and is the only code that calls Jira.
             plan = self.llm.generate_plan(AGENT_INSTRUCTIONS, context)
             outcome = execute_plan(plan, team_id, slack_user_id, channel_id)
             return AgentResult(self._format_outcome(outcome))
@@ -43,6 +48,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _format_outcome(outcome):
+        """Turn an execute_plan result into short Slack text (lists are capped to keep the message small)."""
         intent = outcome["intent"]
         if intent == "clarify" or intent == "unknown":
             return outcome["message"]

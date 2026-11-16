@@ -18,19 +18,23 @@ logger = logging.getLogger(__name__)
 
 
 def handle_slack_event(event, context, raw_body, lambda_client):
+    """Acknowledge an Events API request and queue the workspace cleanup when the app was removed."""
     try:
         body = json.loads(raw_body or "{}")
     except ValueError:
         return json_response(400, {"error": "invalid JSON"})
+    # One-time handshake when the Request URL is saved in the Slack app settings.
     if body.get("type") == "url_verification":
         return json_response(200, {"challenge": body.get("challenge", "")})
     if body.get("type") != "event_callback":
         return json_response(200, {"ok": True, "ignored": True})
+    # Optional extra check: ignore events addressed to a different Slack app.
     expected_app = os.environ.get("SLACK_APP_ID")
     if expected_app and body.get("api_app_id") != expected_app:
         logger.warning("Ignoring event for another Slack app")
         return json_response(200, {"ok": True, "ignored": True})
 
+    # Map the event to a cleanup reason; every other event type is acknowledged and ignored.
     team_id = body.get("team_id")
     inner = body.get("event") or {}
     if inner.get("type") == "app_uninstalled":
@@ -42,6 +46,7 @@ def handle_slack_event(event, context, raw_body, lambda_client):
     if not team_id:
         return json_response(200, {"ok": True, "ignored": True})
 
+    # DynamoDB deletes can take longer than Slack's 3-second limit: do them in an async task.
     task = {"_async_task": "uninstall_workspace", "_task_secret": get_secret("ASYNC_TASK_SECRET"),
             "team_id": team_id, "reason": reason}
     lambda_client.invoke(FunctionName=context.function_name, InvocationType="Event",
@@ -56,6 +61,8 @@ def uninstall_workspace(team_id, reason="app_uninstalled", store=None, users=Non
     from slack.installation_store import InstallationStore
     from util.dynamo_helper import DynamoHelper
 
+    # Always: drop the workspace's bot token. Only on a full uninstall: also users' Jira connections
+    # (tokens included) and approvals still waiting for a click.
     steps = [("installation", lambda: (store or InstallationStore()).delete(team_id))]
     if reason == "app_uninstalled":
         steps += [

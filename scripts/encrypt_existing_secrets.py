@@ -23,10 +23,11 @@ from util import field_crypto  # noqa: E402
 
 @dataclass(frozen=True)
 class TableSpec:
+    """Which table to migrate and which of its fields hold secrets."""
     physical_suffix: str        # jira-agent-<stage>-<suffix>
     logical_name: str           # table name in the encryption context
     key_attributes: tuple       # primary key attributes (also the encryption context ids)
-    secret_fields: tuple
+    secret_fields: tuple        # attributes that must be stored encrypted
 
 
 SPECS = (
@@ -38,6 +39,7 @@ SPECS = (
 
 @dataclass
 class Counts:
+    """Migration statistics (numbers only, safe to print)."""
     rows: int = 0
     already_sealed: int = 0
     plaintext: int = 0
@@ -52,6 +54,7 @@ def migrate_table(table, spec, apply, seal=field_crypto.seal):
     projection = ", ".join(f"#a{i}" for i in range(len(spec.key_attributes) + len(spec.secret_fields)))
     names = {f"#a{i}": name for i, name in enumerate(spec.key_attributes + spec.secret_fields)}
     start_key = None
+    # Full table scan, page by page; only the key and the secret attributes are read.
     while True:
         kwargs = {"ProjectionExpression": projection, "ExpressionAttributeNames": names}
         if start_key:
@@ -71,6 +74,7 @@ def migrate_table(table, spec, apply, seal=field_crypto.seal):
                 counts.per_field[secret] = counts.per_field.get(secret, 0) + 1
                 if not apply:
                     continue
+                # The row ids form the encryption context, exactly as the Lambda does on write.
                 sealed = seal(value, spec.logical_name, secret, **key)
                 try:
                     table.update_item(
@@ -91,6 +95,7 @@ def migrate_table(table, spec, apply, seal=field_crypto.seal):
 
 
 def main():
+    """Parse arguments, find the stage's KMS key from the bootstrap stack export and migrate both tables."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stage", required=True, choices=["staging", "prod"])
     parser.add_argument("--profile", default=None)
@@ -105,6 +110,7 @@ def main():
     key_arn = exports.get(f"jira-agent-{args.stage}-data-key-arn")
     if not key_arn:
         sys.exit(f"Export jira-agent-{args.stage}-data-key-arn not found: deploy the bootstrap stack first.")
+    # Turn on encryption for this process only, with the same key the Lambda uses.
     os.environ["FIELD_ENCRYPTION"] = "kms"
     os.environ["FIELD_ENCRYPTION_KEY_ARN"] = key_arn
     field_crypto.set_kms_client(session.client("kms"))

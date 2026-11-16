@@ -1,3 +1,11 @@
+"""Connect a Slack user to Jira with Atlassian OAuth 2.0 (3LO).
+
+Flow:
+1. ``/jira-agent connect`` -> build_connect_response: a one-time state row + the Atlassian authorize URL.
+2. User approves on Atlassian -> GET /oauth/callback -> finish_oauth_callback:
+   consume the state (gives back team_id + slack_user_id), exchange the code for tokens, pick the Jira site,
+   read /myself (account id + timezone) and store the connection with tokens encrypted.
+"""
 import json
 import logging
 import os
@@ -19,10 +27,13 @@ logger = logging.getLogger(__name__)
 
 
 class AuthenticationJira:
+    """OAuth helpers; ``event`` is the API Gateway event of the callback ({} when only building a link)."""
+
     def __init__(self, event):
         self.event = event
 
     def html_response(self, status_code, title, message):
+        """Minimal result page for the user's browser; title and message are HTML-escaped."""
         html = ("<!doctype html><html><head><meta charset=\"utf-8\"><title>" + slack_escape(title) +
                 "</title></head><body style=\"font-family:system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 20px\"><h2>" +
                 slack_escape(title) + "</h2><p>" + slack_escape(message) +
@@ -30,6 +41,7 @@ class AuthenticationJira:
         return {"statusCode":status_code,"headers":{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"},"body":html}
 
     def atlassian_json_request(self, url, method="GET", data=None, access_token=None):
+        """JSON request to Atlassian (token endpoint or API). The error body is never logged or returned."""
         headers={"Accept":"application/json"}
         body=None
         if data is not None:
@@ -47,12 +59,14 @@ class AuthenticationJira:
             raise RuntimeError(f"Atlassian OAuth/API request failed with HTTP {exc.code}.") from exc
 
     def exchange_oauth_code(self, code):
+        """Trade the one-time authorization code for an access token and a refresh token."""
         return self.atlassian_json_request(ATLASSIAN_TOKEN_URL,method="POST",data={
             "grant_type":"authorization_code","client_id":os.environ["ATLASSIAN_CLIENT_ID"],
             "client_secret":get_secret("ATLASSIAN_CLIENT_SECRET"),"code":code,
             "redirect_uri":os.environ["ATLASSIAN_REDIRECT_URI"]})
 
     def choose_jira_resource(self, resources):
+        """Pick the Jira site from accessible-resources: the only one, or the one matching JIRA_BASE_URL."""
         candidates=[x for x in resources if x.get("id") and x.get("url")]
         preferred=os.environ.get("JIRA_BASE_URL","").rstrip("/").lower()
         if preferred:
@@ -66,22 +80,29 @@ class AuthenticationJira:
         raise RuntimeError("Multiple Jira sites are available. Set JIRA_BASE_URL to the intended site URL, then reconnect.")
 
     def finish_oauth_callback(self):
+        """Handle GET /oauth/callback and return an HTML page (success or a readable error)."""
         params=self.event.get("queryStringParameters") or {}
+        # The user clicked "Cancel" on the Atlassian consent screen.
         if params.get("error"):
             return self.html_response(400,"Jira connection cancelled","Atlassian did not authorize the connection. Run `/jira-agent connect` again.")
         code,state=params.get("code"),params.get("state")
         if not code or not state:
             return self.html_response(400,"Could not connect Jira","Missing authorization code or state. Run `/jira-agent connect` again.")
         try:
+            # 1) One-time, unexpired state -> which Slack user started this flow (CSRF protection).
             team_id,slack_user_id=DynamoHelper("OAUTH_STATES_TABLE").consume_oauth_state(state,kind="jira")
+            # 2) Tokens. offline_access is required to get a refresh token.
             token=self.exchange_oauth_code(code)
             access,refresh=token.get("access_token"),token.get("refresh_token")
             if not access or not refresh:
                 raise RuntimeError("Atlassian did not return access and refresh tokens. Check offline_access scope.")
+            # 3) Which Jira site(s) the user granted access to; exactly one is used.
             resources=self.atlassian_json_request(ATLASSIAN_RESOURCES_URL,access_token=access)
             site=self.choose_jira_resource(resources if isinstance(resources,list) else [])
+            # 4) The user's Jira account id (used in JQL) and profile timezone.
             api=f"https://api.atlassian.com/ex/jira/{urllib.parse.quote(site['id'],safe='')}/rest/api/3/myself"
             myself=self.atlassian_json_request(api,access_token=access)
+            # 5) Store the connection (one row per team_id + slack_user_id; reconnecting replaces it).
             now=int(time.time()); expires=now+int(token.get("expires_in",3600))
             record={"team_id":team_id,"slack_user_id":slack_user_id,"jiraAccountId":myself.get("accountId",""),
                     "jiraCloudId":site["id"],
@@ -102,12 +123,15 @@ class AuthenticationJira:
             logger.info("Stored Jira OAuth connection for Slack user %s",slack_user_id)
             return self.html_response(200,"Jira connected successfully",f"Connected to {site.get('name') or site['url']}. Return to Slack and run `/jira-agent list` or `/jira-agent logwork today`.")
         except ValueError as exc:
+            # Expected, user-safe errors (expired/used link, ...): show the message as is.
             return self.html_response(400,"Could not connect Jira",str(exc))
         except Exception:
+            # Anything else: generic page; details only in CloudWatch.
             logger.exception("Failed to complete Atlassian OAuth callback")
             return self.html_response(500,"Could not connect Jira","Connection failed. Check Lambda logs and OAuth configuration, then try again.")
 
     def build_connect_response(self, team_id, slack_user_id):
+        """Slack reply (only visible to the user) with a single-use Atlassian authorization link."""
         try:
             url=DynamoHelper("OAUTH_STATES_TABLE").create_oauth_authorization_url(team_id,slack_user_id)
             return json_response(200,{"response_type":"ephemeral","text":f"Connect your Jira account: <{url}|*Connect Jira*>. This link expires in 10 minutes and can only be used once."})

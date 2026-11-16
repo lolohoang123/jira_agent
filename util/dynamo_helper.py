@@ -1,3 +1,10 @@
+"""DynamoDB access for Jira connections (OAUTH_USERS_TABLE) and OAuth states (OAUTH_STATES_TABLE).
+
+- Jira connection: one row per (team_id, slack_user_id) with tokens (encrypted), site and account id.
+- OAuth state: one-time CSRF token for the Jira connect flow and the Slack install flow (10-minute TTL).
+- Token refresh: a short DynamoDB lock makes sure only one invocation refreshes a user's token at a time,
+  because Atlassian rotates the refresh token and a second refresh with the old one would fail.
+"""
 import json
 import logging
 import os
@@ -24,13 +31,14 @@ CONNECTIONS_TABLE = "jira-connections"
 
 # Atlassian token errors meaning the stored refresh token can never work again.
 REVOKED_GRANT_ERRORS = {"invalid_grant", "unauthorized_client", "access_denied"}
-STATE_TTL_SECONDS = 600
-REFRESH_LOCK_SECONDS = 30
-REFRESH_WAIT_SECONDS = 8
-REFRESH_POLL_INTERVAL = 0.5
+STATE_TTL_SECONDS = 600        # Connect Jira / Add to Slack links are valid for 10 minutes
+REFRESH_LOCK_SECONDS = 30      # how long a refresh lock is held before another invocation may take over
+REFRESH_WAIT_SECONDS = 8       # how long a request waits for another invocation's refresh to finish
+REFRESH_POLL_INTERVAL = 0.5    # seconds between checks while waiting
 
 
 def _dynamodb_resource():
+    """boto3 DynamoDB resource; points to DynamoDB Local when DYNAMODB_ENDPOINT_URL is set."""
     endpoint = os.environ.get("DYNAMODB_ENDPOINT_URL")
     kwargs = {}
     if endpoint:
@@ -67,11 +75,14 @@ def user_key(team_id, slack_user_id):
 
 
 class DynamoHelper:
+    """Operations on one table, given by the NAME of its environment variable (e.g. "OAUTH_USERS_TABLE")."""
+
     def __init__(self, table_name):
         self.table_name_env = table_name
         self.dynamodb = _dynamodb_resource()
 
     def oauth_table(self):
+        """The boto3 Table this helper works on (name read from the environment at call time)."""
         table_name = os.environ.get(self.table_name_env)
         if not table_name and self.table_name_env == "OAUTH_USERS_TABLE":
             table_name = "read-jira-users"  # backward-compatible fallback
@@ -91,6 +102,7 @@ class DynamoHelper:
         return item if item.get("connected", True) else {}
 
     def get_jira_account_id_for_slack_user(self, team_id, slack_user_id):
+        """Jira accountId of the connected user; ValueError (shown to the user) when not connected."""
         item = self._read_connection(team_id, slack_user_id, "jiraAccountId")
         account_id = item.get("jiraAccountId")
         if not account_id:
@@ -106,6 +118,7 @@ class DynamoHelper:
         return cloud_id
 
     def _put_state(self, kind, **attributes):
+        """Create a random one-time state (256 bits) of the given flow ``kind``; expires after 10 minutes."""
         state = secrets.token_urlsafe(32)
         now = int(time.time())
         self.oauth_table().put_item(
@@ -121,6 +134,7 @@ class DynamoHelper:
         return self._put_state("slack_install")
 
     def create_oauth_authorization_url(self, team_id, slack_user_id):
+        """Atlassian consent URL for this Slack user; the state row remembers who asked (team + user)."""
         user_key(team_id, slack_user_id)  # validates both ids
         client_id = os.environ["ATLASSIAN_CLIENT_ID"]
         redirect_uri = os.environ["ATLASSIAN_REDIRECT_URI"]
@@ -137,6 +151,7 @@ class DynamoHelper:
         if not state:
             raise ValueError("Missing OAuth state.")
         now = int(time.time())
+        # Mark the state used in one conditional write, so a link can never be used twice.
         try:
             result = self.oauth_table().update_item(
                 Key={"state": state},
@@ -163,6 +178,7 @@ class DynamoHelper:
 
     @staticmethod
     def normalize_expiry(value):
+        """Token expiry as Unix seconds; old rows stored milliseconds (values above 10^12 are divided)."""
         try:
             value = int(value or 0)
         except (TypeError, ValueError):
@@ -171,10 +187,12 @@ class DynamoHelper:
 
     @staticmethod
     def _iso(ts):
+        """Unix seconds -> "2026-11-12T08:00:00Z" (stored next to the expiry for readability)."""
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @staticmethod
     def _read_user(table, team_id, user_id):
+        """Full connection row (strongly consistent), or None."""
         return table.get_item(Key=user_key(team_id, user_id), ConsistentRead=True).get("Item")
 
     def disconnect_slack_user(self, team_id, slack_user_id):
@@ -188,6 +206,7 @@ class DynamoHelper:
             raise ValueError("team_id is required")
         table = self.oauth_table()
         deleted, start_key = 0, None
+        # Query by partition key (team_id) page by page and batch-delete every row found.
         with table.batch_writer() as batch:
             while True:
                 kwargs = {"KeyConditionExpression": Key("team_id").eq(team_id),
@@ -219,6 +238,10 @@ class DynamoHelper:
             logger.warning("Could not clear revoked Jira tokens for Slack user %s", slack_user_id)
 
     def get_oauth_credentials(self, team_id, slack_user_id):
+        """Decrypted credentials for Jira calls: access token, cloud id, site URL and timezone.
+
+        The access token is refreshed first when it expires within 60 seconds.
+        """
         user_key(team_id, slack_user_id)  # validates both ids
         table = self.oauth_table()
         user = self._read_user(table, team_id, slack_user_id)
@@ -253,9 +276,16 @@ class DynamoHelper:
             logger.warning("Could not store the timezone for Slack user %s", slack_user_id)
 
     def refresh_access_token(self, team_id, slack_user_id):
+        """Get a new access token with the refresh token and store both (Atlassian rotates refresh tokens).
+
+        Concurrency: take a per-user lock (refreshLockOwner/refreshLockUntil) with a conditional update.
+        An invocation that cannot get the lock waits until the other one stored a fresh token and returns
+        that row, or gives up after REFRESH_WAIT_SECONDS. Returns the updated connection row.
+        """
         table = self.oauth_table()
-        owner = str(uuid.uuid4())
+        owner = str(uuid.uuid4())  # identifies this invocation as the lock holder
         deadline = time.monotonic() + REFRESH_WAIT_SECONDS
+        # Step 1: acquire the lock (free, expired, or already ours).
         while True:
             now = int(time.time())
             try:
@@ -281,6 +311,7 @@ class DynamoHelper:
                     raise RuntimeError("Another request is refreshing the Jira token; please retry")
                 time.sleep(REFRESH_POLL_INTERVAL)
 
+        # Step 2: we hold the lock. Re-read: another invocation may have refreshed just before us.
         try:
             user = self._read_user(table, team_id, slack_user_id)
             if self.normalize_expiry(user.get("accessTokenExpiresAt")) > int(time.time()) + 60:
@@ -297,6 +328,7 @@ class DynamoHelper:
             }
             request = Request(ATLASSIAN_TOKEN_URL, data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+            # Step 3: call Atlassian. A revoked/expired grant disconnects the user (tokens are removed).
             try:
                 with urlopen(request, timeout=15) as response:
                     token_data = json.loads(response.read().decode())
@@ -313,6 +345,7 @@ class DynamoHelper:
             if not access or not expires_in:
                 raise RuntimeError("Atlassian token response is missing access_token or expires_in")
             expires_at = int(time.time()) + int(expires_in)
+            # Step 4: store the new tokens (encrypted) and release the lock, only if we still own it.
             table.update_item(
                 Key=user_key(team_id, slack_user_id),
                 UpdateExpression=("SET accessToken=:access_token, refreshToken=:refresh_token, accessTokenExpiresAt=:e, "
@@ -328,6 +361,7 @@ class DynamoHelper:
             )
             return self._read_user(table, team_id, slack_user_id)
         except Exception:
+            # On any failure release our lock so the next request can retry immediately.
             try:
                 table.update_item(
                     Key=user_key(team_id, slack_user_id),

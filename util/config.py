@@ -25,9 +25,10 @@ SECRET_NAMES = ("SLACK_SIGNING_SECRET", "SLACK_CLIENT_SECRET", "ATLASSIAN_CLIENT
 DEFAULT_CACHE_SECONDS = 300
 _MISSING = object()
 
+# Process-wide cache shared by all invocations of a warm Lambda container.
 _lock = threading.Lock()
-_cache = {}
-_loaded_at = None
+_cache = {}          # secret name -> value, plus "__prefix__" (the prefix the values were loaded for)
+_loaded_at = None    # time.monotonic() of the last SSM load
 _ssm_client = None
 
 
@@ -75,6 +76,7 @@ def clear_cache():
 
 
 def _cache_seconds():
+    """How long loaded secrets are reused (SECRET_CACHE_SECONDS, default 300)."""
     try:
         return max(0, int(os.environ.get("SECRET_CACHE_SECONDS", DEFAULT_CACHE_SECONDS)))
     except ValueError:
@@ -82,6 +84,7 @@ def _cache_seconds():
 
 
 def _from_ssm(prefix, name):
+    """Cached SSM value of ``name``; reloads everything when the cache is stale or the prefix changed."""
     global _loaded_at
     with _lock:
         fresh = _loaded_at is not None and time.monotonic() - _loaded_at < _cache_seconds()
@@ -91,6 +94,7 @@ def _from_ssm(prefix, name):
 
 
 def _load_all(prefix):
+    """Fetch all known secrets in a single GetParameters call (decrypted) and replace the cache."""
     global _loaded_at
     names = {parameter_name(prefix, secret): secret for secret in SECRET_NAMES}
     response = _client().get_parameters(Names=list(names), WithDecryption=True)
@@ -107,6 +111,7 @@ def _load_all(prefix):
 
 
 def _client():
+    """Lazily created SSM client (reused across invocations)."""
     global _ssm_client
     if _ssm_client is None:
         _ssm_client = boto3.client("ssm")

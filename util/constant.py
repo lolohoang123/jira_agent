@@ -1,9 +1,13 @@
+"""Fixed URLs and OAuth scopes. Scope lists must match the Atlassian and Slack app configurations."""
+
+# Atlassian OAuth 2.0 (3LO) scopes requested on /jira-agent connect; offline_access gives a refresh token.
 OAUTH_SCOPES = [
     "read:jira-user",
     "read:jira-work",
     "write:jira-work",
     "offline_access",
 ]
+# Atlassian endpoints: consent screen, code/refresh-token exchange, and the list of sites a token can access.
 ATLASSIAN_AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 ATLASSIAN_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 ATLASSIAN_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"

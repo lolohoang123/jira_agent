@@ -1,3 +1,11 @@
+"""Slack slash command ``/jira-agent`` and the entry for interactivity payloads.
+
+Fixed commands (handled without the model):
+    connect | disconnect | list | logwork today | logwork find <keyword> (alias: find <keyword>)
+Any other text goes to the Bedrock assistant (if enabled and within the rate limit).
+
+The reply here is the 3-second ACK only; Jira work runs in an async task that answers via response_url.
+"""
 import json
 import logging
 import os
@@ -17,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _valid_response_url(response_url):
+    """Only Slack's own hooks host is accepted, so async tasks never POST results to an arbitrary URL."""
     parsed = urllib.parse.urlparse(response_url or "")
     return parsed.scheme == "https" and parsed.hostname in {"hooks.slack.com", "hooks.slack-gov.com"}
 
@@ -38,8 +47,10 @@ def parse_search_command(text):
 
 def _start_search(keyword, team_id, slack_user_id, response_url, context, lambda_client):
     """/jira-agent logwork find <keyword>: validate, check the connection, search asynchronously."""
+    # Nothing searchable left after removing JQL special characters: show usage instead of searching.
     if not jql_text_terms(keyword):
         return json_response(200, {"response_type": "ephemeral", "text": SEARCH_USAGE})
+    # Fail fast (inside the ACK) when the user has not connected Jira yet.
     try:
         DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
     except Exception:
@@ -80,7 +91,9 @@ def _disconnect(team_id, slack_user_id):
 
 
 def handle_slack_request(event, context, raw_body, lambda_client):
+    """Handle a signature-verified Slack request: interactivity payload or ``/jira-agent`` command."""
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    # Interactivity requests are form-encoded with a single JSON "payload" field.
     if "application/x-www-form-urlencoded" in headers.get("content-type", ""):
         form = parse_qs(raw_body)
         if "payload" in form:
@@ -91,6 +104,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
                 return handle_view_submission(payload, context, lambda_client)
             return json_response(200, "")
 
+    # Slash command fields (form-encoded): command, text, team_id, user_id, channel_id, response_url.
     data = parse_qs(raw_body)
     command = data.get("command", [""])[0]
     text = " ".join(data.get("text", [""])[0].split())  # preserve original casing for the LLM
@@ -110,15 +124,19 @@ def handle_slack_request(event, context, raw_body, lambda_client):
     if not InstallationStore().is_installed(team_id):
         return json_response(200, {"response_type": "ephemeral", "text": not_installed_message()})
 
+    # connect: reply with a one-time Atlassian authorization link (expires in 10 minutes).
     if normalized == "connect":
         return AuthenticationJira({}).build_connect_response(team_id, slack_user_id)
+    # disconnect: delete the stored connection and tokens.
     if normalized == "disconnect":
         return _disconnect(team_id, slack_user_id)
 
+    # logwork find <keyword> / find <keyword>
     keyword = parse_search_command(text)
     if keyword is not None:
         return _start_search(keyword, team_id, slack_user_id, response_url, context, lambda_client)
 
+    # Not a fixed command: free text for the natural-language assistant (Bedrock).
     supported = {"logwork today", "list"}
     if normalized not in supported:
         if not agent_enabled():
@@ -142,6 +160,7 @@ def handle_slack_request(event, context, raw_body, lambda_client):
         )
         return json_response(200, {"response_type": "ephemeral", "text": "I'm processing your Jira request..."})
 
+    # list / logwork today: resolve the user's Jira account id now (fast DynamoDB read), then fetch async.
     try:
         account_id = DynamoHelper("OAUTH_USERS_TABLE").get_jira_account_id_for_slack_user(team_id, slack_user_id)
     except Exception:
