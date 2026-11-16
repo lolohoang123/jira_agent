@@ -231,8 +231,10 @@ class DynamoHelper:
         cloud_id = user.get("jiraCloudId")
         if not access_token or not cloud_id:
             raise RuntimeError("Jira OAuth record is missing access token or cloud ID")
+        site_url = unseal(user.get("jiraSiteUrl"), CONNECTIONS_TABLE, "jiraSiteUrl",
+                          team_id=team_id, slack_user_id=slack_user_id)
         return {"access_token": access_token, "cloud_id": cloud_id,
-                "jira_site_url": user.get("jiraSiteUrl"), "time_zone": user.get("timeZone")}
+                "jira_site_url": site_url, "time_zone": user.get("timeZone")}
 
     def get_user_timezone_name(self, team_id, slack_user_id):
         """The user's stored IANA timezone, or None (not connected, or connected before it was stored)."""

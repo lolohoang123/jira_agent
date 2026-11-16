@@ -336,3 +336,108 @@ def test_legacy_plaintext_bot_token_still_works(kms):
 
     # Act & Assert
     assert InstallationStore(table).get_bot_token("T1") == BOT
+
+
+# --------------------------------------------------------------------------------------
+# Site identity (jiraSiteUrl, jiraSiteName) and workspace name (team_name)
+# --------------------------------------------------------------------------------------
+
+SITE_URL, SITE_NAME, TEAM_NAME = "https://acme-secret.atlassian.net", "Acme Secret Site", "Testing_Slack"
+
+
+def test_oauth_callback_seals_site_url_and_name(kms):
+    # Arrange
+    from jira import authentication_jira as auth
+    helpers = {"OAUTH_STATES_TABLE": MagicMock(), "OAUTH_USERS_TABLE": MagicMock()}
+    helpers["OAUTH_STATES_TABLE"].consume_oauth_state.return_value = ("T1", "U1")
+
+    def fake_request(self, url, method="GET", data=None, access_token=None):
+        if url.endswith("/oauth/token"):
+            return {"access_token": ACCESS, "refresh_token": REFRESH, "expires_in": 3600}
+        if url.endswith("accessible-resources"):
+            return [{"id": "cloud-1", "url": SITE_URL + "/", "name": SITE_NAME}]
+        return {"accountId": "acc-1"}
+
+    with patch.object(auth, "DynamoHelper", side_effect=lambda name: helpers[name]), \
+            patch.object(auth.AuthenticationJira, "atlassian_json_request", fake_request):
+        # Act
+        page = auth.AuthenticationJira({"queryStringParameters": {"code": "c", "state": "s"}}).finish_oauth_callback()
+
+    # Assert: the success page may name the site; the stored row must not contain it in plaintext
+    assert page["statusCode"] == 200
+    item = helpers["OAUTH_USERS_TABLE"].oauth_table.return_value.put_item.call_args.kwargs["Item"]
+    assert item["jiraSiteUrl"]["v"] == 1 and item["jiraSiteName"]["v"] == 1
+    assert SITE_URL not in repr(item) and SITE_NAME not in repr(item)
+    assert kms.blobs[item["jiraSiteUrl"]["ct"]][2] == SITE_URL.encode()  # stored without the trailing slash
+    assert kms.blobs[item["jiraSiteName"]["ct"]][1]["field"] == "jiraSiteName"
+    assert item["jiraCloudId"] == "cloud-1"  # still plaintext: used for site binding
+
+
+def test_site_url_is_decrypted_for_issue_links(kms, users_table):
+    # Arrange
+    row = {"team_id": "T1", "slack_user_id": "U1", "jiraCloudId": "cloud-1", "connected": True,
+           "accessTokenExpiresAt": 4_000_000_000,
+           "accessToken": seal(ACCESS, "jira-connections", "accessToken", **IDS),
+           "jiraSiteUrl": seal(SITE_URL, "jira-connections", "jiraSiteUrl", **IDS)}
+    field_crypto.clear_cache()
+    users_table.get_item.return_value = {"Item": row}
+
+    # Act
+    credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
+    from jira import jira_client
+    with patch.object(jira_client.DynamoHelper, "get_oauth_credentials", return_value=credentials):
+        site_url = jira_client.JiraClient("T1", "U1").site_url
+
+    # Assert
+    assert credentials["jira_site_url"] == SITE_URL
+    assert site_url == SITE_URL
+
+
+def test_legacy_plaintext_site_url_still_works(kms, users_table):
+    # Arrange: connected before the site fields were encrypted
+    users_table.get_item.return_value = {"Item": {
+        "team_id": "T1", "slack_user_id": "U1", "jiraCloudId": "cloud-1", "accessTokenExpiresAt": 4_000_000_000,
+        "accessToken": ACCESS, "jiraSiteUrl": SITE_URL}}
+
+    # Act
+    credentials = DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
+
+    # Assert
+    assert credentials["jira_site_url"] == SITE_URL and kms.decrypt_calls == 0
+
+
+def test_site_url_of_another_user_cannot_be_used(kms, users_table):
+    # Arrange: a ciphertext copied from another user's row
+    stolen = seal(SITE_URL, "jira-connections", "jiraSiteUrl", team_id="T1", slack_user_id="U_OTHER")
+    field_crypto.clear_cache()
+    users_table.get_item.return_value = {"Item": {
+        "team_id": "T1", "slack_user_id": "U1", "jiraCloudId": "cloud-1", "accessTokenExpiresAt": 4_000_000_000,
+        "accessToken": ACCESS, "jiraSiteUrl": stolen}}
+
+    # Act & Assert
+    with pytest.raises(FieldEncryptionError):
+        DynamoHelper("OAUTH_USERS_TABLE").get_oauth_credentials("T1", "U1")
+
+
+@pytest.mark.real_installation_store
+def test_installation_team_name_is_sealed(kms):
+    # Arrange
+    table = MagicMock()
+
+    # Act
+    item = InstallationStore(table).save({"team_id": "T1", "team_name": TEAM_NAME, "bot_token": BOT})
+
+    # Assert
+    assert item["team_name"]["v"] == 1 and TEAM_NAME not in repr(item)
+    assert kms.blobs[item["team_name"]["ct"]][1] == {"app": "jira-agent", "table": "installations",
+                                                     "field": "team_name", "team_id": "T1"}
+
+
+@pytest.mark.real_installation_store
+def test_missing_team_name_stays_empty(kms):
+    # Act
+    item = InstallationStore(MagicMock()).save({"team_id": "T1", "bot_token": BOT})
+
+    # Assert: nothing to protect, no KMS call for it
+    assert item["team_name"] == ""
+    assert kms.encrypt_calls == 1  # the bot token only

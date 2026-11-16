@@ -45,7 +45,8 @@ class InstallationStore:
         now = int(time.time())
         item = {
             "team_id": installation["team_id"],
-            "team_name": installation.get("team_name") or "",
+            "team_name": seal(installation.get("team_name") or "", INSTALLATIONS_TABLE, "team_name",
+                              team_id=installation["team_id"]),
             "app_id": installation.get("app_id") or "",
             "bot_user_id": installation.get("bot_user_id") or "",
             "bot_token": seal(installation["bot_token"], INSTALLATIONS_TABLE, "bot_token",

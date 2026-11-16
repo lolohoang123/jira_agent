@@ -84,9 +84,10 @@ class AuthenticationJira:
             myself=self.atlassian_json_request(api,access_token=access)
             now=int(time.time()); expires=now+int(token.get("expires_in",3600))
             record={"team_id":team_id,"slack_user_id":slack_user_id,"jiraAccountId":myself.get("accountId",""),
-                    "jiraCloudId":site["id"],"jiraSiteUrl":site["url"].rstrip("/"),
-                    "jiraSiteName":site.get("name",""),
-                    # Tokens are stored encrypted (KMS, bound to this row by the encryption context).
+                    "jiraCloudId":site["id"],
+                    # Tokens and site identity are stored encrypted (KMS, bound to this row by the encryption context).
+                    "jiraSiteUrl":seal(site["url"].rstrip("/"),CONNECTIONS_TABLE,"jiraSiteUrl",team_id=team_id,slack_user_id=slack_user_id),
+                    "jiraSiteName":seal(site.get("name",""),CONNECTIONS_TABLE,"jiraSiteName",team_id=team_id,slack_user_id=slack_user_id),
                     "accessToken":seal(access,CONNECTIONS_TABLE,"accessToken",team_id=team_id,slack_user_id=slack_user_id),
                     "refreshToken":seal(refresh,CONNECTIONS_TABLE,"refreshToken",team_id=team_id,slack_user_id=slack_user_id),
                     "accessTokenExpiresAt":expires,

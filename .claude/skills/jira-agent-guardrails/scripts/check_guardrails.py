@@ -30,7 +30,8 @@ SECRET_NAMES = {"SLACK_SIGNING_SECRET", "SLACK_CLIENT_SECRET", "SLACK_BOT_TOKEN"
                 "ASYNC_TASK_SECRET"}
 SECRET_LOADER = "util/config.py"
 # DynamoDB attributes / update placeholders that hold tokens: their values must be seal(...) calls.
-STORED_SECRET_KEYS = {"accessToken", "refreshToken", "bot_token", ":access_token", ":refresh_token"}
+STORED_SECRET_KEYS = {"accessToken", "refreshToken", "bot_token", ":access_token", ":refresh_token",
+                      "jiraSiteUrl", "jiraSiteName", "team_name"}
 SEALING_STORAGE_APIS = {"save"}  # InstallationStore.save seals the bot token itself
 
 

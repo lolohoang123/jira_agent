@@ -94,5 +94,6 @@ def test_installations_spec():
     from slack.installation_store import INSTALLATIONS_TABLE
     from util.dynamo_helper import CONNECTIONS_TABLE
     assert (spec.logical_name, spec.key_attributes, spec.secret_fields) == (INSTALLATIONS_TABLE, ("team_id",),
-                                                                            ("bot_token",))
+                                                                            ("bot_token", "team_name"))
     assert CONNECTIONS.logical_name == CONNECTIONS_TABLE
+    assert CONNECTIONS.secret_fields == ("accessToken", "refreshToken", "jiraSiteUrl", "jiraSiteName")

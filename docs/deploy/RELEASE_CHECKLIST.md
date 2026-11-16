@@ -161,7 +161,7 @@ console if a step looks different.
 
 ## 7. Data retention (GAP-04)
 
-Tokens in `jira-connections` and `installations` are stored as KMS ciphertext (`{"v": 1, "kid", "ct"}`), not
+Tokens and names (`accessToken`, `refreshToken`, `jiraSiteUrl`, `jiraSiteName`; `bot_token`, `team_name`) in `jira-connections` and `installations` are stored as KMS ciphertext (`{"v": 1, "kid", "ct"}`), not
 readable from the console, exports or backups without `kms:Decrypt` on the stage key and the row's encryption
 context.
 

@@ -30,8 +30,9 @@ class TableSpec:
 
 
 SPECS = (
-    TableSpec("jira-connections", "jira-connections", ("team_id", "slack_user_id"), ("accessToken", "refreshToken")),
-    TableSpec("installations", "installations", ("team_id",), ("bot_token",)),
+    TableSpec("jira-connections", "jira-connections", ("team_id", "slack_user_id"),
+              ("accessToken", "refreshToken", "jiraSiteUrl", "jiraSiteName")),
+    TableSpec("installations", "installations", ("team_id",), ("bot_token", "team_name")),
 )
 
 
