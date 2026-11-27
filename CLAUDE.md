@@ -17,7 +17,8 @@ A Slack bot (`/jira-agent`) that lets users connect Jira via Atlassian OAuth 2.0
 - `_backup_phase1/`, `_backup_phase2/` – old snapshots. **Do not edit or import from these**; ignore them when searching.
 
 ## Commands
-- Install: `pip install -r requirements.txt pytest` (runtime dependency is only `boto3`).
+- Install: `pip install -r requirements-dev.txt` (runtime dependencies + pytest/pyyaml).
+- Runtime dependencies live in `layers/python-deps/requirements.txt` (only `boto3`) and ship as a Lambda layer (`DependenciesLayer` in `template.yaml`). Never add a `requirements.txt` at the repo root: SAM would bundle the libraries into the function package again.
 - Tests: `python -m pytest tests` from the repo root (pytest runs both the unittest and pytest-style tests).
 - Config: copy `.env.example` to `.env` for local values; never commit `.env`.
 - Guardrails: `python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .` (also run in CI).

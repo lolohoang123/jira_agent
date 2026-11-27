@@ -1,0 +1,3 @@
+# Runtime dependencies of the Lambda function. Built by SAM into the "python-deps" Lambda layer
+# (template.yaml: DependenciesLayer), not into the function package. Keep it to stdlib + boto3 (guardrail G8).
+boto3>=1.34,<2

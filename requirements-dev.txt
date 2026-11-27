@@ -1,0 +1,5 @@
+# Local development and CI: runtime dependencies (the Lambda layer) plus test tools.
+# Deliberately NOT named requirements.txt: SAM would otherwise pip-install it into the function package.
+-r layers/python-deps/requirements.txt
+pytest
+pyyaml

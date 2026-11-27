@@ -56,6 +56,10 @@ aws cloudformation describe-stacks --profile mfa --stack-name jira-agent-github-
 If the account already has the `token.actions.githubusercontent.com` provider, add
 `--parameter-overrides CreateOidcProvider=false`.
 
+> **Re-run this command whenever `infra/github-oidc-bootstrap.yaml` changes.** Example: the `DependencyLayer`
+> statement lets the deploy roles publish the `jira-agent-<stage>-python-deps` Lambda layer; until the bootstrap
+> stack is updated, the GitHub deploy fails with `AccessDenied` on `lambda:PublishLayerVersion`.
+
 ### 2b. GitHub side (repository Settings)
 
 Environments with secrets and required reviewers need a **public repository, or GitHub Pro / Team / Enterprise

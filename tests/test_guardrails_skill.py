@@ -22,7 +22,9 @@ _spec.loader.exec_module(guardrails)
 def repo(tmp_path):
     for folder in guardrails.SOURCE_DIRS:
         shutil.copytree(REPO / folder, tmp_path / folder, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy(REPO / "requirements.txt", tmp_path / "requirements.txt")
+    deps = tmp_path / "layers" / "python-deps"
+    deps.mkdir(parents=True)
+    shutil.copy(REPO / "layers" / "python-deps" / "requirements.txt", deps / "requirements.txt")
     # Known, reported violation in the real repo (unused write path); remove it for a clean baseline.
     (tmp_path / "jira" / "tasks" / "run_create_worklog_task.py").unlink(missing_ok=True)
     return tmp_path
@@ -143,7 +145,7 @@ def test_removed_safeguard_is_reported(repo, rel, old, new, rule):
 
 def test_extra_runtime_dependency_is_a_warning(repo):
     # Arrange
-    (repo / "requirements.txt").write_text("boto3\nrequests>=2\n", encoding="utf-8")
+    (repo / "layers" / "python-deps" / "requirements.txt").write_text("boto3\nrequests>=2\n", encoding="utf-8")
 
     # Act
     findings = run(repo)

@@ -33,7 +33,7 @@ The Converse API uses `bedrock:InvokeModel`. Do not grant model invocation permi
 
 ## 4. Deploy
 
-Deploy the contents of this project directory as the Lambda package, preserving the configured handler module path. `requirements.txt` already includes boto3. If building a deployment package with dependencies, install the requirements into the package directory as usual for the Lambda Python runtime.
+Deploy the contents of this project directory as the Lambda package, preserving the configured handler module path. Third-party packages (boto3) are not part of the function package: `sam build` builds them from `layers/python-deps/requirements.txt` into the `python-deps` Lambda layer.
 
 ## 5. Test
 

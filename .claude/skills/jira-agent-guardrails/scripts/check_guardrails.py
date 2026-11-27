@@ -198,13 +198,16 @@ class Checker:
 
     def g8_dependencies(self):
         """Runtime dependencies: stdlib + boto3 only."""
-        req = self.root / "requirements.txt"
-        if req.exists():
+        # The Lambda layer's list (current layout); a root requirements.txt is still checked if one appears.
+        for req in (self.root / "layers" / "python-deps" / "requirements.txt", self.root / "requirements.txt"):
+            if not req.exists():
+                continue
+            rel = req.relative_to(self.root).as_posix()
             for number, raw in enumerate(req.read_text(encoding="utf-8").splitlines(), 1):
                 line = raw.split("#", 1)[0].strip()
                 name = re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0].lower() if line else ""
                 if name and name not in ALLOWED_RUNTIME_DEPS and name != "botocore":
-                    self.add("G8", "WARN", "requirements.txt", number, f"Runtime dependency `{name}` (stdlib + boto3 only)")
+                    self.add("G8", "WARN", rel, number, f"Runtime dependency `{name}` (stdlib + boto3 only)")
         for path, src in self.sources.items():
             for node in ast.walk(ast.parse(src)):
                 mods = []

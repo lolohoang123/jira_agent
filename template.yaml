@@ -249,6 +249,21 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${JiraAgentApi}/*
 
+  # Third-party Python packages (layers/python-deps/requirements.txt), built by `sam build` into python/ and
+  # mounted at /opt/python. The function package itself contains only this repository's code: the repo root
+  # has no requirements.txt, so SAM does not pip-install anything into the function.
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub jira-agent-${Stage}-python-deps
+      Description: Runtime Python dependencies of jira-agent (boto3 pinned by layers/python-deps/requirements.txt).
+      ContentUri: layers/python-deps
+      CompatibleRuntimes: [python3.12]
+      CompatibleArchitectures: [x86_64]
+      RetentionPolicy: Delete # old versions are deleted on update instead of piling up
+    Metadata:
+      BuildMethod: python3.12
+
   JiraAgentFunction:
     Type: AWS::Serverless::Function
     DependsOn: JiraAgentLogGroup
@@ -257,6 +272,8 @@ Resources:
       Handler: functions.read_jira_lambda.lambda_handler
       Runtime: !Ref Runtime
       CodeUri: .
+      Layers:
+        - !Ref DependenciesLayer
       MemorySize: 512
       Timeout: 60
       ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]

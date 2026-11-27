@@ -29,6 +29,8 @@ slack/                               # Slack API, security, modal, message block
 approval/                            # Approval boundary scaffold
 util/                                # DynamoDB, constants, common helpers
 tests/
+layers/python-deps/requirements.txt # third-party runtime packages (boto3) -> Lambda layer, not the function
+requirements-dev.txt                # local/CI install: the layer requirements + pytest, pyyaml
 template.yaml                       # AWS SAM template (staging / prod stacks)
 samconfig.toml                      # sam deploy --config-env staging|prod
 .github/workflows/                  # CI (tests, guardrails, cfn-lint) and deploy (OIDC, staging auto, prod manual)

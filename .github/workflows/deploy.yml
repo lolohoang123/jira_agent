@@ -50,7 +50,7 @@ jobs:
 
       - name: Tests and guardrails must pass before deploying
         run: |
-          pip install -r requirements.txt pytest pyyaml
+          pip install -r requirements-dev.txt
           python -m pytest tests -q
           python .claude/skills/jira-agent-guardrails/scripts/check_guardrails.py .
 
@@ -65,6 +65,8 @@ jobs:
 
       - name: Build
         # Builds with the runner's Python 3.12 (setup-python above), matching the Lambda runtime.
+        # Two artifacts: the function (repo code only) and the python-deps layer (pip install of
+        # layers/python-deps/requirements.txt). `cached` in samconfig.toml rebuilds the layer only when it changes.
         run: sam build
 
       - name: Deploy

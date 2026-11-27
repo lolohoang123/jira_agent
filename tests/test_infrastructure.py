@@ -365,3 +365,39 @@ def test_function_encrypts_fields_with_the_imported_stage_key(function):
     assert variables["FIELD_ENCRYPTION_KEY_ARN"] == imported
     assert field["Action"] == ["kms:Encrypt", "kms:Decrypt"] and field["Resource"] == imported
     assert field["Condition"] == {"StringEquals": {"kms:EncryptionContext:app": "jira-agent"}}
+
+
+# --------------------------------------------------------------------------------------
+# Third-party libraries ship in a Lambda layer, not in the function package
+# --------------------------------------------------------------------------------------
+
+def test_dependencies_are_built_into_a_layer(template, function):
+    # Arrange
+    layer = template["Resources"]["DependenciesLayer"]
+
+    # Assert: SAM builds layers/python-deps/requirements.txt as a Python layer and the function mounts it
+    assert layer["Type"] == "AWS::Serverless::LayerVersion"
+    assert layer["Metadata"] == {"BuildMethod": "python3.12"}
+    assert layer["Properties"]["ContentUri"] == "layers/python-deps"
+    assert layer["Properties"]["CompatibleRuntimes"] == ["python3.12"]
+    assert layer["Properties"]["LayerName"] == {"Sub": "jira-agent-${Stage}-python-deps"}
+    assert function["Layers"] == [{"Ref": "DependenciesLayer"}]
+    lines = (ROOT / "layers" / "python-deps" / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    assert [x for x in lines if x.strip() and not x.startswith("#")] == ["boto3>=1.34,<2"]
+
+
+def test_function_package_has_no_requirements_file():
+    # Assert: with CodeUri "." a root requirements.txt would make SAM pip-install the libraries into the function
+    assert not (ROOT / "requirements.txt").exists()
+    assert "-r layers/python-deps/requirements.txt" in (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("policy,stage", [("StagingDeployPolicy", "staging"), ("ProdDeployPolicy", "prod")])
+def test_deploy_role_may_publish_only_its_stage_layer(bootstrap, policy, stage):
+    # Arrange
+    statements = bootstrap["Resources"][policy]["Properties"]["PolicyDocument"]["Statement"]
+    layer = {s["Sid"]: s for s in statements}["DependencyLayer"]
+
+    # Assert
+    assert "lambda:PublishLayerVersion" in layer["Action"] and "lambda:*" not in layer["Action"]
+    assert all(f":layer:jira-agent-{stage}-*" in r["Sub"] for r in layer["Resource"])

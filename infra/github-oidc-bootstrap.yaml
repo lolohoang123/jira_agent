@@ -240,6 +240,13 @@ Resources:
             Effect: Allow
             Action: lambda:*
             Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-staging*
+          - Sid: DependencyLayer
+            Effect: Allow
+            Action: [lambda:PublishLayerVersion, lambda:GetLayerVersion, lambda:DeleteLayerVersion,
+                     lambda:ListLayerVersions]
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:jira-agent-staging-*
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:jira-agent-staging-*:*
           - Sid: HttpApi
             Effect: Allow
             Action: [apigateway:GET, apigateway:POST, apigateway:PUT, apigateway:PATCH, apigateway:DELETE,
@@ -367,6 +374,13 @@ Resources:
             Effect: Allow
             Action: lambda:*
             Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:jira-agent-prod*
+          - Sid: DependencyLayer
+            Effect: Allow
+            Action: [lambda:PublishLayerVersion, lambda:GetLayerVersion, lambda:DeleteLayerVersion,
+                     lambda:ListLayerVersions]
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:jira-agent-prod-*
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:jira-agent-prod-*:*
           - Sid: HttpApi
             Effect: Allow
             Action: [apigateway:GET, apigateway:POST, apigateway:PUT, apigateway:PATCH, apigateway:DELETE,
