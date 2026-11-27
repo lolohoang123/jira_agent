@@ -1,7 +1,7 @@
 """Slack slash command ``/jira-agent`` and the entry for interactivity payloads.
 
 Fixed commands (handled without the model):
-    connect | disconnect | list | logwork today | logwork find <keyword> (alias: find <keyword>)
+    help (or no text) | connect | disconnect | list | logwork today | logwork find <keyword> (alias: find <keyword>)
 Any other text goes to the Bedrock assistant (if enabled and within the rate limit).
 
 The reply here is the 3-second ACK only; Jira work runs in an async task that answers via response_url.
@@ -17,7 +17,7 @@ from jira.authentication_jira import AuthenticationJira
 from slack.installation_store import InstallationStore
 from util.common import json_response
 from jira.jira_service import MAX_KEYWORD_LENGTH, jql_text_terms
-from util.config import AGENT_DISABLED_MESSAGE, agent_enabled, get_secret
+from util.config import AGENT_DISABLED_MESSAGE, HELP_MESSAGE, agent_enabled, get_secret
 from util.rate_limit import agent_limit_message, agent_request_allowed
 from util.dynamo_helper import DynamoHelper
 
@@ -124,6 +124,9 @@ def handle_slack_request(event, context, raw_body, lambda_client):
     if not InstallationStore().is_installed(team_id):
         return json_response(200, {"response_type": "ephemeral", "text": not_installed_message()})
 
+    # help, or the bare command: usage (Slack Marketplace requires a help reply).
+    if normalized in {"", "help"}:
+        return json_response(200, {"response_type": "ephemeral", "text": HELP_MESSAGE})
     # connect: reply with a one-time Atlassian authorization link (expires in 10 minutes).
     if normalized == "connect":
         return AuthenticationJira({}).build_connect_response(team_id, slack_user_id)

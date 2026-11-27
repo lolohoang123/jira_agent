@@ -133,6 +133,11 @@ class DynamoHelper:
         """One-time state for the Slack "Add to Slack" OAuth v2 flow (CSRF protection)."""
         return self._put_state("slack_install")
 
+    def create_site_selection_state(self, team_id, slack_user_id):
+        """One-time state for the "choose your Jira site" page (several sites were granted)."""
+        user_key(team_id, slack_user_id)  # validates both ids
+        return self._put_state("jira_site", teamId=team_id, slackUserId=slack_user_id)
+
     def create_oauth_authorization_url(self, team_id, slack_user_id):
         """Atlassian consent URL for this Slack user; the state row remembers who asked (team + user)."""
         user_key(team_id, slack_user_id)  # validates both ids
@@ -147,7 +152,10 @@ class DynamoHelper:
         return f"{ATLASSIAN_AUTHORIZE_URL}?{urlencode(params)}"
 
     def consume_oauth_state(self, state, kind="jira"):
-        """Mark a state used (single use, unexpired, same flow). Jira: returns (team_id, slack_user_id)."""
+        """Mark a state used (single use, unexpired, same flow).
+
+        Jira flows ("jira", "jira_site") return (team_id, slack_user_id); other kinds return the row.
+        """
         if not state:
             raise ValueError("Missing OAuth state.")
         now = int(time.time())
@@ -169,7 +177,7 @@ class DynamoHelper:
                 raise ValueError("This link has expired or has already been used. Please start again.") from exc
             raise
         attributes = result.get("Attributes") or {}
-        if kind != "jira":
+        if kind not in ("jira", "jira_site"):
             return attributes
         team_id, user_id = attributes.get("teamId"), attributes.get("slackUserId")
         if not team_id or not user_id:
@@ -258,6 +266,23 @@ class DynamoHelper:
                           team_id=team_id, slack_user_id=slack_user_id)
         return {"access_token": access_token, "cloud_id": cloud_id,
                 "jira_site_url": site_url, "time_zone": user.get("timeZone")}
+
+    def get_pending_site_selection(self, team_id, slack_user_id):
+        """Decrypted tokens of a connection waiting for the user to choose a Jira site.
+
+        Raises ValueError (shown to the user) when nothing is pending or the access token has expired:
+        the site list is read with that token, so the user must start again.
+        """
+        user = self._read_user(self.oauth_table(), team_id, slack_user_id)
+        if not user or not user.get("pendingSiteSelection"):
+            raise ValueError("There is no Jira site to choose any more. Run `/jira-agent connect` in Slack again.")
+        expires_at = self.normalize_expiry(user.get("accessTokenExpiresAt"))
+        if expires_at <= int(time.time()) + 60:
+            raise ValueError("This page has expired. Run `/jira-agent connect` in Slack again.")
+        ids = {"team_id": team_id, "slack_user_id": slack_user_id}
+        return {"access_token": unseal(user.get("accessToken"), CONNECTIONS_TABLE, "accessToken", **ids),
+                "refresh_token": unseal(user.get("refreshToken"), CONNECTIONS_TABLE, "refreshToken", **ids),
+                "expires_at": expires_at, "scope": user.get("scope", "")}
 
     def get_user_timezone_name(self, team_id, slack_user_id):
         """The user's stored IANA timezone, or None (not connected, or connected before it was stored)."""

@@ -59,12 +59,20 @@ def agent_enabled():
     return os.environ.get("AGENT_ENABLED", "true").strip().lower() not in {"false", "0", "no", "off"}
 
 
-AGENT_DISABLED_MESSAGE = (
-    "The natural-language assistant is temporarily disabled. Available commands: "
-    "`/jira-agent list`, `/jira-agent logwork today`, `/jira-agent logwork find <keyword>`, "
-    "`/jira-agent connect`, `/jira-agent disconnect`. "
-    "To log time, use the *Log Time* button in `list`, `logwork today` or `logwork find` results."
+# Usage shown for `/jira-agent help`, an empty `/jira-agent`, and unknown text while the assistant is off.
+HELP_MESSAGE = (
+    "*Jira Agent commands*\n"
+    "• `/jira-agent connect` – connect your Jira account (one time)\n"
+    "• `/jira-agent list` – see the tickets assigned to you\n"
+    "• `/jira-agent logwork find <keyword>` – find a ticket by keyword or key, e.g. `PROJ-123`\n"
+    "• `/jira-agent logwork today` – see the time you logged today\n"
+    "• `/jira-agent disconnect` – disconnect your Jira account\n"
+    "• `/jira-agent help` – show this message\n"
+    "To log time, click *Log Time* next to a ticket, fill in the form, then click *Approve* in the "
+    "message I send you. Nothing is written to Jira before you approve."
 )
+
+AGENT_DISABLED_MESSAGE = "Sorry, I don't recognize that command.\n" + HELP_MESSAGE
 
 
 def clear_cache():

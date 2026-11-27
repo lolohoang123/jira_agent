@@ -68,7 +68,8 @@ erDiagram
         number accessTokenExpiresAt "Unix seconds (old rows: ms)"
         string accessTokenExpiresAtIso
         string scope
-        bool connected "false after invalid_grant"
+        bool connected "false after invalid_grant, and while a Jira site choice is pending"
+        bool pendingSiteSelection "true: several sites were granted, waiting for GET /oauth/select-site"
         number connectedAt
         number disconnectedAt "set when tokens were revoked"
         number updatedAt

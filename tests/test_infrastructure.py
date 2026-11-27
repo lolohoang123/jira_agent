@@ -122,8 +122,8 @@ def test_routes_and_callback_url(template, function):
 
     # Assert: exactly the two public routes, both proxied to the function, invokable only from this API
     target = {"Sub": "integrations/${JiraAgentIntegration}"}
-    assert routes == {"POST /": target, "GET /oauth/callback": target, "GET /slack/install": target,
-                      "GET /slack/oauth/callback": target, "POST /slack/events": target}
+    assert routes == {"POST /": target, "GET /oauth/callback": target, "GET /oauth/select-site": target,
+                      "GET /slack/install": target, "GET /slack/oauth/callback": target, "POST /slack/events": target}
     assert integration["IntegrationUri"] == {"GetAtt": "JiraAgentFunction.Arn"}
     assert integration["PayloadFormatVersion"] == "2.0"  # handler reads rawPath / requestContext.http
     assert permission["Principal"] == "apigateway.amazonaws.com"

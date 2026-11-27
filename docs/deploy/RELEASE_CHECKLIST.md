@@ -118,7 +118,9 @@ console if a step looks different.
 
 ## 5. Slack app
 
-- [ ] **Slash Commands → `/jira-agent`** Request URL = `ApiUrl`.
+- [ ] **Slash Commands → `/jira-agent`** Request URL = `ApiUrl`. Short description: `Log Jira time and see your
+      tickets`. Usage hint: `[help | connect | list | logwork today | logwork find <keyword> | disconnect]`.
+      `/jira-agent help` and a bare `/jira-agent` reply with usage (Slack Marketplace requirement).
 - [ ] **Interactivity & Shortcuts** on, Request URL = `ApiUrl`.
 - [ ] **OAuth & Permissions → Bot Token Scopes**: `commands`, `chat:write`, `users:read` (and `chat:write.public`
       only if `ApprovalDelivery=channel` must post in channels the bot was not invited to). `users:read` reads the
@@ -126,6 +128,9 @@ console if a step looks different.
       (Jira timezone, else `JiraTimezone`) and get the Slack fallback after reinstalling through the install link.
 - [ ] **App Home → Messages Tab** enabled. Approvals are sent as a DM from the bot (`ApprovalDelivery=dm`,
       default); users who cannot open the bot DM get "couldn't send you the approval" instead of a request.
+- [ ] **App Home → "Allow users to send Slash commands and messages from the messages tab" OFF.** The app does
+      not read DMs (no `im:history` scope); Slack Marketplace rejects a Messages tab that accepts input and
+      never answers. **Home Tab OFF** (the app has no App Home content; a placeholder Home tab is rejected).
 - [ ] **OAuth & Permissions → Redirect URLs**: add the stack output `SlackRedirectUrl` exactly.
 - [ ] **Event Subscriptions** on, Request URL = output `SlackEventsUrl` (Slack sends a challenge; it must show
       "Verified"). **Subscribe to bot events**: `app_uninstalled`, `tokens_revoked`.

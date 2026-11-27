@@ -71,6 +71,7 @@ flowchart LR
 | Approve / Reject | `POST /` (Interactivity) | `approval/` → async task `handle_approval_action` | Conditional update `PENDING → EXECUTING`, then the worklog is created |
 | Natural-language request | `POST /` (Slash command) | `agent/` (orchestrator, `tool_registry.py`) | Runs asynchronously via self-invoke so Slack gets an ACK within 3 seconds |
 | Connect Jira | `GET /oauth/callback` | `jira/authentication_jira.py` | State is stored in `OAUTH_STATES_TABLE` |
+| Choose a Jira site (only when the Atlassian account has several) | `GET /oauth/select-site` | `jira/authentication_jira.py` | One-time state of kind `jira_site`; tokens wait in a pending connection row |
 | Async task | Lambda `Event` invocation (not via API Gateway) | `jira/tasks/` | The Lambda invokes itself |
 
 ### AWS resources

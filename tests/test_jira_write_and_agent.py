@@ -596,3 +596,46 @@ def test_tc37_response_url_host_is_enforced(urlopen, url):
     with pytest.raises(ValueError, match="Invalid Slack response_url host"):
         post_slack_response(url, {"text": "x"})
     urlopen.assert_not_called()
+
+
+# --------------------------------------------------------------------------------------
+# Read tasks: user-facing error texts (Slack Marketplace: actionable errors, no internals)
+# --------------------------------------------------------------------------------------
+
+READ_TASKS = [
+    ("jira.tasks.run_list_assigned_task", "RunListAssignedTask", "find_assigned_issues", {"account_id": "acc-1"}),
+    ("jira.tasks.run_today_worklogs_task", "RunTodayWorklogsTask", "fetch_today_worklogs", {"account_id": "acc-1"}),
+    ("jira.tasks.run_search_issues_task", "RunSearchIssuesTask", "search_issues", {"keyword": "login"}),
+]
+
+
+def _run_read_task(module_name, class_name, method, extra, error):
+    import importlib
+    module = importlib.import_module(module_name)
+    event = {"team_id": "T1", "slack_user_id": "U1", "response_url": "https://hooks.slack.com/x", **extra}
+    with patch.object(module, "JiraService") as service, patch.object(module, "post_slack_response") as post:
+        getattr(service.return_value, method).side_effect = error
+        getattr(module, class_name)(event).run()
+    return post.call_args.args[1]["text"]
+
+
+@pytest.mark.parametrize("module_name,class_name,method,extra", READ_TASKS)
+def test_tc65_revoked_jira_access_tells_the_user_to_reconnect(module_name, class_name, method, extra):
+    # Arrange
+    from util.dynamo_helper import JiraConnectionRevoked
+
+    # Act
+    text = _run_read_task(module_name, class_name, method, extra, JiraConnectionRevoked())
+
+    # Assert
+    assert text == str(JiraConnectionRevoked()) and "/jira-agent connect" in text
+
+
+@pytest.mark.parametrize("module_name,class_name,method,extra", READ_TASKS)
+def test_tc66_other_failures_are_actionable_without_internals(module_name, class_name, method, extra):
+    # Act
+    text = _run_read_task(module_name, class_name, method, extra, RuntimeError("Jira API returned HTTP 500"))
+
+    # Assert
+    assert "try again" in text.lower()
+    assert "Lambda" not in text and "configuration" not in text and "HTTP 500" not in text

@@ -78,4 +78,5 @@ def handle_slack_oauth_callback(event):
         return _page(400, "Could not install the app", str(exc))
     except Exception:
         logger.exception("Failed to complete the Slack install")
-        return _page(500, "Could not install the app", "Installation failed. Check the Lambda logs and try again.")
+        return _page(500, "Could not install the app", "Installation failed. Please open the install link again. If it keeps "
+                     "failing, contact the app's support.")

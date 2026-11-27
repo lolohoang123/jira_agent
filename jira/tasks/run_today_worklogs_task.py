@@ -1,6 +1,7 @@
 """Async task for /jira-agent logwork today: today's worklogs of the user, replied via response_url."""
 import logging
 from jira.jira_service import JiraService
+from util.dynamo_helper import JiraConnectionRevoked
 from slack.slack_client import post_slack_response
 from slack.message_builder import build_today_worklog_blocks
 
@@ -20,9 +21,13 @@ class RunTodayWorklogsTask:
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,
                 "text":f"Jira Worklogs — {day:%d/%m/%Y}",
                 "blocks":build_today_worklog_blocks(day,entries,service.site_url)})
+        except JiraConnectionRevoked as exc:
+            # Authorization revoked or expired: tell the user exactly how to fix it.
+            post_slack_response(url,{"response_type":"ephemeral","replace_original":True,"text":str(exc)})
         except Exception:
             logger.exception("Failed to fetch today's Jira worklogs")
             post_slack_response(url,{"response_type":"ephemeral","replace_original":True,
-                "text":"Could not fetch Jira worklogs. Check configuration and Lambda logs."})
+                "text":"I couldn't load today's worklogs. Please try again in a minute; if it keeps failing, "
+                "reconnect with `/jira-agent connect`."})
 
     def run_today_worklogs_task(self): self.run()  # name used by the async task router

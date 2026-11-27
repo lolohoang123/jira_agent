@@ -44,7 +44,8 @@ class AgentOrchestrator:
             return AgentResult(self._format_outcome(outcome))
         except Exception:
             logger.exception("Agent request failed for Slack user %s", slack_user_id)
-            return AgentResult("I couldn't complete that Jira request. Check that Jira is connected and review the Lambda logs.")
+            return AgentResult("I couldn't complete that Jira request. Make sure Jira is connected (`/jira-agent connect`) and try "
+                               "again, or see `/jira-agent help`.")
 
     @staticmethod
     def _format_outcome(outcome):

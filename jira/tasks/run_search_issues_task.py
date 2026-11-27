@@ -1,6 +1,7 @@
 import logging
 
 from jira.jira_service import JiraService
+from util.dynamo_helper import JiraConnectionRevoked
 from slack.message_builder import build_search_result_blocks
 from slack.slack_client import post_slack_response
 
@@ -23,6 +24,9 @@ class RunSearchIssuesTask:
             post_slack_response(url, {"response_type": "ephemeral", "replace_original": True,
                                       "text": "Jira tickets matching your search",
                                       "blocks": build_search_result_blocks(keyword, issues, service.site_url)})
+        except JiraConnectionRevoked as exc:
+            # Authorization revoked or expired: tell the user exactly how to fix it.
+            post_slack_response(url,{"response_type":"ephemeral","replace_original":True,"text":str(exc)})
         except Exception:
             # The keyword is not logged: it is user-provided free text.
             logger.exception("Failed to search Jira issues for Slack user %s", self.event.get("slack_user_id"))

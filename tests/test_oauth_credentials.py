@@ -565,21 +565,20 @@ def test_tc34_preferred_site_wins_among_many(monkeypatch, preferred):
 
 
 @pytest.mark.parametrize("preferred", [None, "https://nomatch.atlassian.net"])
-def test_tc35_many_sites_without_match_is_an_error(monkeypatch, preferred):
+def test_tc35_many_sites_without_match_means_the_user_chooses(monkeypatch, preferred):
     # Arrange
     if preferred:
         monkeypatch.setenv("JIRA_BASE_URL", preferred)
     other = {"id": "cloud-2", "url": "https://other.atlassian.net"}
 
-    # Act & Assert
-    with pytest.raises(RuntimeError, match="Multiple Jira sites"):
-        AuthenticationJira({}).choose_jira_resource([other, SITE])
+    # Act & Assert: None = show the site-choice page instead of failing
+    assert AuthenticationJira({}).choose_jira_resource([other, SITE]) is None
 
 
-@pytest.mark.parametrize("resources", [[], [{"id": "x"}]])
-def test_tc36_no_site_is_an_error(resources):
-    # Act & Assert
-    with pytest.raises(RuntimeError, match="No Jira site"):
+@pytest.mark.parametrize("resources", [[], [{"id": "x"}], {"unexpected": "object"}])
+def test_tc36_no_site_is_a_user_facing_error(resources):
+    # Act & Assert: ValueError -> its message is shown on the result page
+    with pytest.raises(ValueError, match="did not give access to any Jira site"):
         AuthenticationJira({}).choose_jira_resource(resources)
 
 
@@ -755,15 +754,11 @@ def test_tc42_missing_refresh_token_fails_without_storing(helpers, atlassian, ca
     assert_no_secrets(response["body"], caplog.text)
 
 
-@pytest.mark.parametrize("break_it", ["http", "sites", "storage", "resources_not_list"])
+@pytest.mark.parametrize("break_it", ["http", "storage"])
 def test_tc43_failures_return_generic_page(helpers, atlassian, caplog, break_it):
     # Arrange
     if break_it == "http":
         atlassian.side_effect = RuntimeError("Atlassian OAuth/API request failed with HTTP 401.")
-    elif break_it == "sites":
-        atlassian.responses["resources"] = [SITE, {"id": "cloud-2", "url": "https://other.atlassian.net"}]
-    elif break_it == "resources_not_list":
-        atlassian.responses["resources"] = {"unexpected": "object"}
     else:
         helpers["OAUTH_USERS_TABLE"].oauth_table.return_value.put_item.side_effect = RuntimeError("ddb down")
 
@@ -772,8 +767,22 @@ def test_tc43_failures_return_generic_page(helpers, atlassian, caplog, break_it)
 
     # Assert
     assert response["statusCode"] == 500
-    assert "Connection failed" in response["body"]
+    assert "Something went wrong while connecting Jira" in response["body"]
+    assert "Lambda" not in response["body"] and "configuration" not in response["body"]
     assert_no_secrets(response["body"], caplog.text)
+
+
+def test_tc43b_no_usable_site_shows_how_to_fix_it(helpers, atlassian):
+    # Arrange
+    atlassian.responses["resources"] = {"unexpected": "object"}
+
+    # Act
+    response = callback({"code": "c", "state": "s"})
+
+    # Assert
+    assert response["statusCode"] == 400
+    assert "did not give access to any Jira site" in response["body"]
+    assert stored_record(helpers) is None
 
 
 @pytest.mark.parametrize("data,token,body,expected", [
@@ -838,7 +847,7 @@ def test_tc47_connect_response(helpers, fails):
     body = json.loads(response["body"])
     assert response["statusCode"] == 200 and body["response_type"] == "ephemeral"
     if fails:
-        assert "Could not start Jira connection" in body["text"]
+        assert "couldn't create a Jira connection link" in body["text"] and "DynamoDB" not in body["text"]
     else:
         assert "<https://auth.atlassian.com/authorize?state=s|*Connect Jira*>" in body["text"]
         assert "expires in 10 minutes" in body["text"] and "only be used once" in body["text"]
@@ -949,3 +958,179 @@ def test_tc54_network_error(credentials_store, jira_urlopen):
     # Act & Assert
     with pytest.raises(RuntimeError, match="Unable to connect to Jira API"):
         JiraClient("T1", "U1").request("/rest/x")
+
+
+# --------------------------------------------------------------------------------------
+# Several Jira sites: the user picks one in the browser (GET /oauth/select-site)
+# --------------------------------------------------------------------------------------
+
+OTHER_SITE = {"id": "cloud-2", "url": "https://other.atlassian.net", "name": "Other <b>Co</b>"}
+
+
+def test_tc55_several_sites_show_a_choice_page_and_store_a_pending_row(helpers, atlassian):
+    # Arrange
+    atlassian.responses["resources"] = [SITE, OTHER_SITE]
+    helpers["OAUTH_STATES_TABLE"].create_site_selection_state.return_value = "sel-1"
+
+    # Act
+    with patch.object(auth_module.time, "time", return_value=NOW):
+        response = callback({"code": "c", "state": "s"})
+
+    # Assert: a page with one one-time link per site; names are HTML-escaped
+    body = response["body"]
+    assert response["statusCode"] == 200 and "Choose your Jira site" in body
+    assert "https://api.example.com/oauth/select-site?state=sel-1&amp;site=cloud-1" in body
+    assert "state=sel-1&amp;site=cloud-2" in body
+    assert "Other &lt;b&gt;Co&lt;/b&gt;" in body and "<b>Co</b>" not in body
+    helpers["OAUTH_STATES_TABLE"].create_site_selection_state.assert_called_once_with("T1", "U1")
+    # Pending row: tokens kept, not usable yet, no site; /myself is not called before the choice
+    row = stored_record(helpers)
+    assert row["connected"] is False and row["pendingSiteSelection"] is True
+    assert row["accessToken"] == ACCESS and row["refreshToken"] == REFRESH
+    assert row["accessTokenExpiresAt"] == NOW + 3600
+    assert "jiraCloudId" not in row and "jiraSiteUrl" not in row
+    assert not any(c.args[0].endswith("/myself") for c in atlassian.call_args_list)
+    assert_no_secrets(body)
+
+
+def select(params):
+    return AuthenticationJira({"queryStringParameters": params}).finish_site_selection()
+
+
+@pytest.fixture
+def pending(helpers):
+    users = helpers["OAUTH_USERS_TABLE"]
+    users.get_pending_site_selection.return_value = {"access_token": ACCESS, "refresh_token": REFRESH,
+                                                     "expires_at": NOW + 1800, "scope": "read:jira-work"}
+    return users
+
+
+def test_tc56_choosing_a_site_completes_the_connection(helpers, atlassian, pending):
+    # Arrange
+    atlassian.responses["resources"] = [OTHER_SITE, SITE]
+    atlassian.responses["myself"] = {"accountId": "acc-1", "timeZone": "Asia/Tokyo"}
+
+    # Act
+    with patch.object(auth_module.time, "time", return_value=NOW):
+        response = select({"state": "sel-1", "site": "cloud-1"})
+
+    # Assert
+    assert response["statusCode"] == 200 and "Connected to Acme" in response["body"]
+    helpers["OAUTH_STATES_TABLE"].consume_oauth_state.assert_called_once_with("sel-1", kind="jira_site")
+    pending.get_pending_site_selection.assert_called_once_with("T1", "U1")
+    row = stored_record(helpers)
+    assert row["jiraCloudId"] == "cloud-1" and row["jiraSiteUrl"] == "https://acme.atlassian.net"
+    assert row["connected"] is True and "pendingSiteSelection" not in row
+    assert row["accessTokenExpiresAt"] == NOW + 1800 and row["jiraAccountId"] == "acc-1"
+    assert row["timeZone"] == "Asia/Tokyo"
+
+
+def test_tc57_a_site_the_user_cannot_access_is_refused(helpers, atlassian, pending):
+    # Arrange
+    atlassian.responses["resources"] = [SITE]
+
+    # Act
+    response = select({"state": "sel-1", "site": "cloud-evil"})
+
+    # Assert
+    assert response["statusCode"] == 400 and "not available for your account" in response["body"]
+    assert stored_record(helpers) is None
+
+
+@pytest.mark.parametrize("params", [None, {}, {"state": "sel-1"}, {"site": "cloud-1"}])
+def test_tc58_incomplete_link_stops_before_any_lookup(helpers, atlassian, params):
+    # Act
+    response = select(params)
+
+    # Assert
+    assert response["statusCode"] == 400 and "incomplete" in response["body"]
+    helpers["OAUTH_STATES_TABLE"].consume_oauth_state.assert_not_called()
+    atlassian.assert_not_called()
+
+
+@pytest.mark.parametrize("fail_at,shown", [("state", "already been used"), ("pending", "no Jira site to choose")])
+def test_tc59_used_link_or_nothing_pending_shows_the_reason(helpers, atlassian, pending, fail_at, shown):
+    # Arrange
+    if fail_at == "state":
+        helpers["OAUTH_STATES_TABLE"].consume_oauth_state.side_effect = ValueError(
+            "This link has expired or has already been used.")
+    else:
+        pending.get_pending_site_selection.side_effect = ValueError("There is no Jira site to choose any more.")
+
+    # Act
+    response = select({"state": "sel-1", "site": "cloud-1"})
+
+    # Assert
+    assert response["statusCode"] == 400 and shown in response["body"]
+    atlassian.assert_not_called()
+    assert stored_record(helpers) is None
+
+
+def test_tc60_unexpected_failure_is_a_generic_page(helpers, atlassian, pending, caplog):
+    # Arrange
+    atlassian.side_effect = RuntimeError("Atlassian OAuth/API request failed with HTTP 500.")
+
+    # Act
+    response = select({"state": "sel-1", "site": "cloud-1"})
+
+    # Assert
+    assert response["statusCode"] == 500 and "Something went wrong" in response["body"]
+    assert_no_secrets(response["body"], caplog.text)
+
+
+@pytest.mark.parametrize("row,message", [
+    (None, "no Jira site to choose"),
+    ({"connected": True}, "no Jira site to choose"),
+    ({"pendingSiteSelection": True, "accessTokenExpiresAt": NOW + 30}, "expired"),
+])
+def test_tc61_pending_lookup_rejects_missing_or_expired(table, clock, row, message):
+    # Arrange
+    table.get_item.return_value = {"Item": row} if row else {}
+
+    # Act & Assert
+    with pytest.raises(ValueError, match=message):
+        DynamoHelper("OAUTH_USERS_TABLE").get_pending_site_selection("T1", "U1")
+
+
+def test_tc62_pending_lookup_returns_tokens(table, clock):
+    # Arrange
+    table.get_item.return_value = {"Item": {"pendingSiteSelection": True, "accessToken": ACCESS,
+                                            "refreshToken": REFRESH, "accessTokenExpiresAt": NOW + 900,
+                                            "scope": "s"}}
+
+    # Act
+    pending = DynamoHelper("OAUTH_USERS_TABLE").get_pending_site_selection("T1", "U1")
+
+    # Assert
+    assert pending == {"access_token": ACCESS, "refresh_token": REFRESH, "expires_at": NOW + 900, "scope": "s"}
+
+
+def test_tc63_site_selection_state_is_a_jira_identity(table, clock):
+    # Arrange
+    table.update_item.return_value = {"Attributes": {"kind": "jira_site", "teamId": "T1", "slackUserId": "U1"}}
+    helper = DynamoHelper("OAUTH_STATES_TABLE")
+
+    # Act
+    state = helper.create_site_selection_state("T1", "U1")
+    identity = helper.consume_oauth_state("sel-1", kind="jira_site")
+
+    # Assert
+    item = table.put_item.call_args.kwargs["Item"]
+    assert item["state"] == state and item["kind"] == "jira_site"
+    assert (item["teamId"], item["slackUserId"]) == ("T1", "U1") and item["expiresAt"] == NOW + 600
+    assert identity == ("T1", "U1")
+    assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":kind"] == "jira_site"
+
+
+def test_tc64_select_site_route_is_dispatched():
+    # Arrange
+    from functions import read_jira_lambda
+    event = {"rawPath": "/oauth/select-site", "requestContext": {"http": {"method": "GET"}},
+             "queryStringParameters": {"state": "sel-1", "site": "cloud-1"}}
+    with patch.object(read_jira_lambda, "handle_site_selection", return_value={"statusCode": 200}) as handler:
+        # Act
+        response = read_jira_lambda.lambda_handler(event, None)
+
+    # Assert: browser route, no Slack signature needed
+    assert response == {"statusCode": 200}
+    handler.assert_called_once_with(event)

@@ -8,7 +8,7 @@ import pytest
 
 from handlers.async_task_handler import handle_async_task
 from handlers.slack_command_handler import handle_slack_request
-from util.config import AGENT_DISABLED_MESSAGE, agent_enabled
+from util.config import AGENT_DISABLED_MESSAGE, HELP_MESSAGE, agent_enabled
 
 RESPONSE_URL = "https://hooks.slack.com/commands/T/1/x"
 
@@ -121,3 +121,25 @@ def test_queued_task_notice_failure_is_not_raised(monkeypatch):
 
     # Assert: no exception, so Lambda does not retry
     assert response["statusCode"] == 200
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+@pytest.mark.parametrize("text", ["help", "HELP", "", "  "])
+def test_help_and_bare_command_show_usage(monkeypatch, enabled, text):
+    # Arrange
+    monkeypatch.setenv("AGENT_ENABLED", enabled)
+    with patch("handlers.slack_command_handler.agent_request_allowed") as rate_limit:
+        # Act
+        body, lambda_client = command(text)
+
+    # Assert: usage right away, no async task, no Bedrock, no rate-limit counter
+    assert body == {"response_type": "ephemeral", "text": HELP_MESSAGE}
+    assert "/jira-agent logwork find" in HELP_MESSAGE and "Approve" in HELP_MESSAGE
+    lambda_client.invoke.assert_not_called()
+    rate_limit.assert_not_called()
+
+
+def test_unknown_text_while_disabled_explains_and_shows_usage():
+    # Act & Assert
+    assert AGENT_DISABLED_MESSAGE.startswith("Sorry, I don't recognize that command.")
+    assert HELP_MESSAGE in AGENT_DISABLED_MESSAGE

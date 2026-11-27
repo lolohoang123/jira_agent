@@ -2,7 +2,7 @@
 
 Routing order matters:
 1. GET /slack/install, GET /slack/oauth/callback  - "Add to Slack" install flow (browser, no Slack signature).
-2. GET /oauth/callback                            - Atlassian OAuth 3LO callback (browser, no Slack signature).
+2. GET /oauth/callback, GET /oauth/select-site    - Jira connection flow (browser, no Slack signature).
 3. Async self-invocations (``_async_task`` set)   - authenticated with the shared async task secret, not by Slack.
 4. Everything else is a Slack request             - the Slack signature is verified first, then
    /slack/events goes to the Events API handler and the rest to the slash command / interactivity handler.
@@ -14,7 +14,7 @@ import urllib.parse
 
 import boto3
 
-from handlers.oauth_handler import handle_oauth_callback
+from handlers.oauth_handler import handle_oauth_callback, handle_site_selection
 from handlers.slack_command_handler import handle_slack_request
 from handlers.async_task_handler import handle_async_task
 from handlers.slack_events_handler import handle_slack_event
@@ -42,6 +42,9 @@ def lambda_handler(event,context):
     # Atlassian redirects the user's browser here after the Jira consent screen.
     if normalized_path.endswith("/oauth/callback") and method=="GET":
         return handle_oauth_callback(event)
+    # The user chose one of several Jira sites on the page shown by the callback (one-time state in the link).
+    if normalized_path.endswith("/oauth/select-site") and method=="GET":
+        return handle_site_selection(event)
     # Async task sent by this same function (util/lambda_invoke.py) to do slow work after Slack got its ACK.
     # It does not come through API Gateway, so it is authenticated with the shared task secret instead of
     # a Slack signature. A missing secret rejects every task (fail closed); the comparison is constant-time.
